@@ -1,8 +1,15 @@
 # redmatic-telemetry-server
 
-> Server for gathering usage statistics of [RedMatic](https://github.com/rdmtc/redmatic) installations.
+> Receives the usage statistics of [RedMatic](https://github.com/rdmtc/redmatic) installations and shows them at
+> [telemetry.redmatic.de](https://telemetry.redmatic.de): "RedMatic Usage Statistics".
 
-This site or product includes IP2Location LITE data available from http://www.ip2location.com.
+RedMatic sends, once at every start of the addon, its version, the CCU firmware's version, product and platform, the
+openccu-lite version where there is one, and the installed npm modules, with the installation's random telemetry id.
+The server keeps one row per installation and shows aggregates only.
+
+- [docs/api.md](docs/api.md): the routes, what is sent and what is stored;
+- [docs/data.md](docs/data.md): what is stored, who sees it, how to ask for deletion;
+- [CHANGELOG.md](CHANGELOG.md).
 
 ## Running it
 
@@ -42,3 +49,25 @@ location = / {
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 }
 ```
+
+## Development
+
+Node.js 22.13 or newer.
+
+```sh
+npm ci
+npm run lint    # ESLint and Prettier (npm run format rewrites)
+npm test        # node:test; the app on port 0 with a temporary database
+node scripts/synthetic-db.js dev.db 40000 15   # invented data, for the page
+DB_PATH=dev.db npm start
+```
+
+Tests and development use invented data only, never a copy of the live database.
+
+## Credits
+
+This site or product includes IP2Location LITE data available from https://lite.ip2location.com.
+
+## License
+
+MIT
