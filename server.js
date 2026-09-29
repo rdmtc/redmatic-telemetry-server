@@ -10,6 +10,7 @@ const pkg = require('./package.json');
 const {database, migrate, open} = require('./lib/db.js');
 const {aggregate, exportCsv, publicNodePattern} = require('./lib/stats.js');
 const {applyRetention, deleteInstallation} = require('./lib/retention.js');
+const {plausible, removeImplausible} = require('./lib/plausible.js');
 const {countryLookup} = require('./lib/geo.js');
 const backups = require('./lib/backup.js');
 const trends = require('./lib/trends.js');
@@ -161,6 +162,11 @@ function createApp({
             const body = userAgent.startsWith('curl/') && uuidPattern.test(uuid) ? validate(req.body) : null;
             if (!body) {
                 count('invalid');
+                return res.status(400).send('');
+            }
+            // a version that cannot exist (task 12): refused like a malformed body, and nothing is stored
+            if (!plausible(body.fields)) {
+                count('implausible');
                 return res.status(400).send('');
             }
             store(uuid.toLowerCase(), body, clientAddress(req));
@@ -372,14 +378,21 @@ function tally(log, intervalMs = 60 * 1000) {
 }
 
 /**
- * Runs the daily job now and then every hour: task 11's snapshot first, so the counts of what the retention (task 9)
- * deletes are kept; each run writes what the day still lacks. Logs counts only. Returns a function that stops it.
+ * Runs the daily job now and then every hour: the rows with impossible versions go first (task 12), then task 11's
+ * snapshot, so the counts of what the retention (task 9) deletes are kept; each run writes what the day still lacks.
+ * Logs counts only. Returns a function that stops it.
  */
 function startDaily(db, {log = defaultLog, now = Date.now, intervalMs = 3600 * 1000, backupDir = ''} = {}) {
     const q = database(db);
     const run = () => {
         try {
             const at = new Date(now());
+            // task 12, before the snapshot so it never counts them; on every run, so a correction of the
+            // known-versions list takes effect
+            const removed = removeImplausible(q);
+            if (removed.installations) {
+                log('implausible', JSON.stringify(removed));
+            }
             const done = trends.daily(q, at);
             if (done.new || done.backfilled || done.snapshot) {
                 log('daily', JSON.stringify(done));
@@ -436,7 +449,7 @@ function ts() {
 
 function main() {
     const {port, dbPath, dbipCsv, backupDir, trustProxy, rateLimit} = config();
-    const db = open(dbPath);
+    const db = open(dbPath, {log: defaultLog});
     const geo = countryLookup(dbipCsv, defaultLog);
     const app = createApp({db, geo, trustProxy, rateLimit});
     startDaily(db, {backupDir});

@@ -88,6 +88,7 @@ npm ci
 npm run lint    # ESLint and Prettier (npm run format rewrites)
 npm test        # node:test; the app on port 0 with a temporary database
 node scripts/synthetic-db.js dev.db 40000 15   # invented data, for the page
+scripts/update-redmatic-versions.sh            # data/redmatic-versions.json from RedMatic's tags
 DB_PATH=dev.db npm start
 ```
 

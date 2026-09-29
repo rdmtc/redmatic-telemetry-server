@@ -50,6 +50,10 @@ counts, and errors.
   the id. The server logs how many rows it deleted, never which.
 - **Modules:** only public ones are stored (`redmatic-*`, `node-red-*`, `@scope/node-red-*`), the ones the page
   shows. The modules of other names that older versions of the server stored were deleted once (schema migration 5).
+- **Obviously wrong entries:** an installation that reports a version that cannot exist (a RedMatic version more
+  than one major above the newest release, such as `26.1.0`, or a CCU version outside `2.x`–`4.x`) is refused, and
+  such rows already stored were deleted (schema migration 6); the daily job deletes any left. The log names the
+  versions and the counts, never an id.
 - **The daily counts** are kept.
 - **Backups:** a copy of the database a day, on the server's host, kept 7 days, and one a week kept 8 weeks. A
   deleted installation is gone from the last copy 8 weeks later.

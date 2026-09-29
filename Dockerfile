@@ -23,6 +23,7 @@ COPY --from=deps /geo /geo
 WORKDIR /usr/src/app
 COPY --from=deps /usr/src/app/node_modules ./node_modules
 COPY package.json server.js ./
+COPY data ./data
 COPY lib ./lib
 COPY schema ./schema
 COPY www ./www
