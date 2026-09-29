@@ -24,11 +24,8 @@
   "author": "Sebastian Raff <hobbyquaker@gmail.com>",
   "license": "MIT",
   "dependencies": {
-    "country-code-emoji": "1.0.0",
     "express": "^5.2.1",
-    "flot": "^4.2.3",
     "ip2countrycode": "^1.0.0",
-    "jquery": "^3.6.1",
     "semantic-compare": "^1.0.2"
   },
   "devDependencies": {

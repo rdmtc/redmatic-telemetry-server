@@ -6,7 +6,7 @@ const globals = require('globals');
 
 module.exports = [
     {
-        ignores: ['node_modules/**', 'coverage/**', 'www/jquery.flot.tickrotor.js'],
+        ignores: ['node_modules/**', 'coverage/**'],
     },
     js.configs.recommended,
     prettier,
@@ -26,11 +26,9 @@ module.exports = [
     {
         files: ['www/**/*.js'],
         languageOptions: {
-            sourceType: 'script',
+            sourceType: 'module',
             globals: {
                 ...globals.browser,
-                $: 'readonly',
-                flag: 'readonly',
             },
         },
     },
