@@ -1,8 +1,8 @@
-<!DOCTYPE html>
+<!doctype html>
 
 <title>RedMatic Usage Statistics</title>
 
-<link rel="stylesheet" href="style.css" type="text/css">
+<link rel="stylesheet" href="style.css" type="text/css" />
 
 <script src="node_modules/jquery/dist/jquery.min.js"></script>
 <script src="node_modules/flot/dist/es5/jquery.flot.js"></script>
@@ -13,63 +13,66 @@
 <script language="javascript" type="text/javascript" src="jquery.flot.tickrotor.js"></script>
 
 <body>
-<h1>RedMatic Usage Statistics</h1>
+    <h1>RedMatic Usage Statistics</h1>
 
-<select id="timespan">
-    <option value="1">last 24 hours</option>
-    <option value="7">last 7 days</option>
-    <option value="30">last 30 days</option>
-    <option value="90" selected>last 90 days</option>
-    <option value="36500">all</option>
-</select>
+    <select id="timespan">
+        <option value="1">last 24 hours</option>
+        <option value="7">last 7 days</option>
+        <option value="30">last 30 days</option>
+        <option value="90" selected>last 90 days</option>
+        <option value="36500">all</option>
+    </select>
 
-<h2>RedMatic Installations: <span id="total"></span> </h2>
+    <h2>RedMatic Installations: <span id="total"></span></h2>
 
-<div id="byday"></div>
+    <div id="byday"></div>
 
-<div class="container">
-    <div class="pie">
-        <h3>RedMatic Versions</h3>
-        <div id="redmatic-versions"></div>
+    <div class="container">
+        <div class="pie">
+            <h3>RedMatic Versions</h3>
+            <div id="redmatic-versions"></div>
+        </div>
+        <div class="pie">
+            <h3>CCU Versions</h3>
+            <div id="ccu-versions"></div>
+        </div>
+        <div class="pie">
+            <h3>CCU Platforms</h3>
+            <div id="ccu-platforms"></div>
+        </div>
+        <div class="pie">
+            <h3>CCU Products</h3>
+            <div id="ccu-products"></div>
+        </div>
     </div>
-    <div class="pie">
-        <h3>CCU Versions</h3>
-        <div id="ccu-versions"></div>
+
+    <div class="container">
+        <div class="table">
+            <h3>RedMatic Versions</h3>
+            <table id="redmatic-versions-table"></table>
+            <h3>CCU Versions</h3>
+            <table id="ccu-versions-table"></table>
+            <h3>CCU Platforms</h3>
+            <table id="ccu-platforms-table"></table>
+            <h3>CCU Products</h3>
+            <table id="ccu-products-table"></table>
+            <h3>Countries</h3>
+            <table id="countries"></table>
+        </div>
+        <div class="table">
+            <h3>Installed Nodes</h3>
+            <table id="nodes"></table>
+        </div>
     </div>
-    <div class="pie">
-        <h3>CCU Platforms</h3>
-        <div id="ccu-platforms"></div>
-    </div>
-    <div class="pie">
-        <h3>CCU Products</h3>
-        <div id="ccu-products"></div>
-    </div>
-</div>
 
-<div class="container">
-    <div class="table">
-        <h3>RedMatic Versions</h3>
-        <table id="redmatic-versions-table"></table>
-        <h3>CCU Versions</h3>
-        <table id="ccu-versions-table"></table>
-        <h3>CCU Platforms</h3>
-        <table id="ccu-platforms-table"></table>
-        <h3>CCU Products</h3>
-        <table id="ccu-products-table"></table>
-        <h3>Countries</h3>
-        <table id="countries"></table>
-    </div>
-    <div class="table">
-        <h3>Installed Nodes</h3>
-        <table id="nodes"></table>
-    </div>
-</div>
+    <p class="credits">
+        The aggregates for every timespan can be downloaded, anonymised (no installation ids):
+        <a href="export.json">JSON</a>, <a href="export.csv">CSV</a>.
+    </p>
 
+    <p class="credits">
+        This site or product includes IP2Location LITE data available from http://www.ip2location.com.
+    </p>
 
-<p class="credits">The aggregates for every timespan can be downloaded, anonymised (no installation ids): <a href="export.json">JSON</a>, <a href="export.csv">CSV</a>.</p>
-
-<p class="credits">This site or product includes IP2Location LITE data available from http://www.ip2location.com.</p>
-
-<script src="index.js"></script>
-
+    <script src="index.js"></script>
 </body>

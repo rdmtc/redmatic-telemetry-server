@@ -1,0 +1,297 @@
+'use strict';
+
+const {describe, it, before, after} = require('node:test');
+const assert = require('node:assert/strict');
+
+const {formatInstalls, normalizePlatform, exportCsv} = require('../server.js');
+const {startServer, insertInstallation, uuid, telemetryBody, postTelemetry, waitFor} = require('./helpers.js');
+
+describe('static page', () => {
+    let server;
+    before(async () => {
+        server = await startServer();
+    });
+    after(() => server.close());
+
+    it('serves the page', async () => {
+        const res = await server.fetch('/');
+        assert.equal(res.status, 200);
+        assert.match(await res.text(), /RedMatic Usage Statistics/);
+    });
+});
+
+describe('POST / (telemetry)', () => {
+    let server;
+    before(async () => {
+        server = await startServer();
+    });
+    after(() => server.close());
+
+    const row = (n) => server.db.get('SELECT * FROM installation WHERE uuid=?;', [uuid(n)]);
+    const nodes = (n) =>
+        server.db.all('SELECT name, version FROM node WHERE installation_uuid=? ORDER BY name;', [uuid(n)]);
+
+    it('inserts a new installation with its nodes', async () => {
+        const res = await postTelemetry(server, 1, telemetryBody(), {'X-Forwarded-For': '192.0.2.10'});
+        assert.equal(res.status, 200);
+        const inst = await waitFor(() => row(1));
+        assert.equal(inst.redmatic, '8.0.0');
+        assert.equal(inst.initial, '8.0.0');
+        assert.equal(inst.ccu, '3.89.11');
+        assert.equal(inst.product, 'ccu3');
+        assert.equal(inst.platform, 'ccu3-armv7l');
+        assert.equal(inst.counter, 0);
+        assert.equal(inst.cc, 'DE');
+        assert.equal(inst.country, 'Germany');
+        assert.ok(inst.created);
+        assert.equal(inst.updated, null);
+        // ccu, redmatic, nodejs, node-red and npm are not stored as nodes
+        assert.deepEqual(await waitFor(async () => ((await nodes(1)).length === 2 ? nodes(1) : null)), [
+            {name: 'node-red-contrib-ccu', version: '3.5.0'},
+            {name: 'redmatic-homekit', version: '2.1.0'},
+        ]);
+    });
+
+    it('updates a known installation and replaces its nodes', async () => {
+        await postTelemetry(
+            server,
+            1,
+            telemetryBody({redmatic: '8.1.0', 'redmatic-homekit': undefined, 'node-red-dashboard': '3.6.0'}),
+            {'X-Forwarded-For': '198.51.100.7'},
+        );
+        const inst = await waitFor(async () => {
+            const r = await row(1);
+            return r.counter === 1 ? r : null;
+        });
+        assert.equal(inst.redmatic, '8.1.0');
+        assert.equal(inst.initial, '8.0.0');
+        assert.equal(inst.cc, 'AT');
+        assert.ok(inst.updated);
+        assert.deepEqual(await nodes(1), [
+            {name: 'node-red-contrib-ccu', version: '3.5.0'},
+            {name: 'node-red-dashboard', version: '3.6.0'},
+        ]);
+    });
+
+    it('stores an unknown address as country "-"', async () => {
+        await postTelemetry(server, 2, telemetryBody(), {'X-Forwarded-For': '203.0.113.1'});
+        const inst = await waitFor(() => row(2));
+        assert.equal(inst.cc, '-');
+    });
+
+    it('ignores a request without a curl user agent', async () => {
+        await postTelemetry(server, 3, telemetryBody(), {'User-Agent': 'Mozilla/5.0'});
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        assert.equal(await row(3), undefined);
+    });
+
+    it('ignores a body without ccu or redmatic', async () => {
+        await postTelemetry(server, 4, {redmatic: '8.0.0'});
+        await postTelemetry(server, 5, {ccu: {VERSION: '3.89.11'}});
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        assert.equal(await row(4), undefined);
+        assert.equal(await row(5), undefined);
+    });
+});
+
+describe('normalizePlatform', () => {
+    it('appends the architecture to the bare 2019 names only', () => {
+        assert.equal(normalizePlatform('rpi0'), 'rpi0-armv6l');
+        assert.equal(normalizePlatform('rpi3'), 'rpi3-armv7l');
+        assert.equal(normalizePlatform('rpi4'), 'rpi4-armv7l');
+        assert.equal(normalizePlatform('tinkerboard'), 'tinkerboard-armv7l');
+        assert.equal(normalizePlatform('ova'), 'ova-i686');
+        assert.equal(normalizePlatform('rpi4-aarch64'), 'rpi4-aarch64');
+        assert.equal(normalizePlatform(undefined), undefined);
+    });
+});
+
+describe('GET /data', () => {
+    let server;
+    before(async () => {
+        server = await startServer();
+        const db = server.db;
+        await insertInstallation(db, 1, {
+            created: '-2 hour',
+            redmatic: '8.0.0',
+            nodes: {'node-red-contrib-ccu': '3.5.0'},
+        });
+        await insertInstallation(db, 2, {
+            created: '-3 day',
+            redmatic: '7.10.0',
+            product: 'raspmatic_rpi4',
+            ccu: '3.87.6',
+            cc: 'AT',
+            country: 'Austria',
+            nodes: {'node-red-contrib-ccu': '3.4.0', 'my-private-module': '1.0.0'},
+        });
+        await insertInstallation(db, 3, {
+            created: '-60 day',
+            redmatic: '7.2.0',
+            platform: 'ova-x86_64',
+            nodes: {'redmatic-homekit': '2.1.0'},
+        });
+        // created long ago, but seen 20 hours ago: counted in the short timespans too
+        await insertInstallation(db, 4, {created: '-400 day', updated: '-20 hour', redmatic: '8.0.0'});
+        // neither created nor seen in the last 365 days
+        await insertInstallation(db, 5, {created: '-800 day', redmatic: '6.0.0'});
+    });
+    after(() => server.close());
+
+    const data = async (timespan) => {
+        const res = await server.fetch('/data' + (timespan ? '?timespan=' + timespan : ''));
+        assert.equal(res.status, 200);
+        return res.json();
+    };
+
+    it('counts installations created or updated in the timespan', async () => {
+        assert.equal((await data(1)).total, 2);
+        assert.equal((await data(7)).total, 3);
+        assert.equal((await data(90)).total, 4);
+        assert.equal((await data(365)).total, 4);
+        assert.equal((await data()).total, 5);
+    });
+
+    it('groups versions, products, platforms, countries and CCU versions', async () => {
+        const d = await data(90);
+        assert.deepEqual(d.versions, [
+            ['8.0.0', 2],
+            ['7.10.0', 1],
+            ['7.2.0', 1],
+        ]);
+        assert.deepEqual(d.products, [
+            ['ccu3', 3],
+            ['raspmatic_rpi4', 1],
+        ]);
+        assert.deepEqual(d.platforms, [
+            ['rpi4-aarch64', 3],
+            ['ova-x86_64', 1],
+        ]);
+        assert.deepEqual(d.countries, [
+            ['DE', 'Germany', 3],
+            ['AT', 'Austria', 1],
+        ]);
+        assert.deepEqual(d.ccuVersions, [
+            ['3.89.11', 3],
+            ['3.87.6', 1],
+        ]);
+    });
+
+    it('lists only redmatic-* and node-red-* nodes', async () => {
+        const d = await data(90);
+        assert.deepEqual(d.nodes, [
+            ['node-red-contrib-ccu', 2],
+            ['redmatic-homekit', 1],
+        ]);
+    });
+
+    it('counts new installations per day, or per hour up to 7 days', async () => {
+        const week = await data(7);
+        assert.equal(week.byday.length, 2);
+        assert.ok(week.byday.every(([ts]) => ts % 3600000 === 0));
+        const quarter = await data(90);
+        assert.equal(quarter.byday.length, 3);
+        assert.ok(quarter.byday.every(([ts]) => ts % 86400000 === 0));
+        assert.equal(
+            quarter.byday.reduce((sum, [, count]) => sum + count, 0),
+            3,
+        );
+    });
+});
+
+describe('GET /total.svg', () => {
+    let server;
+    before(async () => {
+        server = await startServer();
+        for (let i = 1; i <= 3; i++) {
+            await insertInstallation(server.db, i, {created: '-' + i * 400 + ' day'});
+        }
+    });
+    after(() => server.close());
+
+    it('answers the badge with every row ever', async () => {
+        const res = await server.fetch('/total.svg');
+        assert.equal(res.status, 200);
+        assert.match(res.headers.get('content-type'), /^image\/svg\+xml/);
+        assert.match(await res.text(), /textLength="210">3<\/text>/);
+    });
+
+    it('formats the number', () => {
+        assert.equal(formatInstalls(0), '0');
+        assert.equal(formatInstalls(999), '999');
+        assert.equal(formatInstalls(1000), '1.0k');
+        assert.equal(formatInstalls(1234), '1.2k');
+        assert.equal(formatInstalls(9999), '10.0k');
+        assert.equal(formatInstalls(12345), '12k');
+        assert.equal(formatInstalls(36498), '36k');
+    });
+});
+
+describe('the database is not downloadable (B-1)', () => {
+    let server;
+    before(async () => {
+        server = await startServer();
+        await insertInstallation(server.db, 1, {nodes: {'node-red-contrib-ccu': '3.5.0', 'my-private-module': '1.0'}});
+        await insertInstallation(server.db, 2, {created: '-100 day', product: 'raspmatic_rpi4'});
+    });
+    after(() => server.close());
+
+    it('GET /database answers 404', async () => {
+        const res = await server.fetch('/database');
+        assert.equal(res.status, 404);
+    });
+
+    it('/export.json holds the aggregates of every timespan, without ids', async () => {
+        const res = await server.fetch('/export.json');
+        assert.equal(res.status, 200);
+        const text = await res.text();
+        assert.ok(!text.includes(uuid(1)) && !text.includes(uuid(2)));
+        assert.ok(!text.includes('my-private-module'));
+        const data = JSON.parse(text);
+        assert.deepEqual(Object.keys(data.timespans), ['1', '7', '30', '90', '365', 'all']);
+        assert.equal(data.timespans['30'].total, 1);
+        assert.equal(data.timespans.all.total, 2);
+        assert.deepEqual(data.timespans.all.nodes, [['node-red-contrib-ccu', 1]]);
+    });
+
+    it('/export.csv holds the same, one line per value', async () => {
+        const res = await server.fetch('/export.csv');
+        assert.equal(res.status, 200);
+        assert.match(res.headers.get('content-type'), /^text\/csv/);
+        const text = await res.text();
+        assert.ok(!text.includes(uuid(1)) && !text.includes('my-private-module'));
+        const lines = text.trim().split('\r\n');
+        assert.equal(lines[0], 'timespan,dimension,value,count');
+        assert.ok(lines.includes('all,total,,2'));
+        assert.ok(lines.includes('all,product,raspmatic_rpi4,1'));
+        assert.ok(lines.includes('all,country,DE,2'));
+        assert.ok(lines.includes('all,node,node-red-contrib-ccu,1'));
+    });
+
+    it('quotes CSV fields with commas and quotes', () => {
+        const csv = exportCsv({timespans: {all: {total: 1, products: [['a,"b"', 1]]}}});
+        assert.ok(csv.includes('all,product,"a,""b""",1\r\n'));
+    });
+});
+
+describe('the log upload is gone (B-2, B-3)', () => {
+    let server;
+    before(async () => {
+        server = await startServer();
+    });
+    after(() => server.close());
+
+    it('POST /log answers 404', async () => {
+        const res = await server.fetch('/log', {
+            method: 'POST',
+            headers: {'User-Agent': 'curl/8.9.1', 'X-RedMatic-nick': '..', 'Content-Type': 'application/octet-stream'},
+            body: Buffer.from([0x1f, 0x8b, 0]),
+        });
+        assert.equal(res.status, 404);
+    });
+
+    it('/logs answers 404', async () => {
+        assert.equal((await server.fetch('/logs/')).status, 404);
+        assert.equal((await server.fetch('/logs/nick/20260101-000000.log.gz')).status, 404);
+    });
+});
