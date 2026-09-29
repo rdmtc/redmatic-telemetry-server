@@ -3,6 +3,7 @@
 services:
   telemetry:
     image: hobbyquaker/redmatic-telemetry-server:latest
+    container_name: redmatic-telemetry
     restart: unless-stopped
     ports:
       - '127.0.0.1:8080:8080'
@@ -10,9 +11,12 @@ services:
       # TRUST_PROXY: '1'   # when the proxy is not on the loopback or a private network
       # RATE_LIMIT: '10'   # telemetry POSTs per client address and hour, 0 = off
       DB_PATH: /data/redmatic.db
-      IP2LOCATION_CSV: /geo/IP2LOCATION-LITE-DB1.CSV
+      DBIP_CSV: /geo/dbip-country-lite.csv.gz
+      BACKUP_DIR: /backup
     volumes:
       # the database; owned by the uid the image was built with (UID, default 996)
       - /srv/redmatic-telemetry/data:/data
-      # the country database, read-only
+      # the country database, read-only; scripts/update-dbip.sh keeps it current (monthly, then SIGHUP)
       - /srv/redmatic-telemetry/geo:/geo:ro
+      # the daily backups (7 daily, 8 weekly); writable by the same uid
+      - /srv/redmatic-telemetry/backup:/backup

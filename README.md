@@ -15,13 +15,14 @@ The server keeps one row per installation and shows aggregates only.
 
 The server is configured by the environment only:
 
-| Variable          | Default                               | Meaning                                                                                                       |
-| ----------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `PORT`            | `8080`                                | HTTP port (plain HTTP: TLS is the reverse proxy's)                                                            |
-| `DB_PATH`         | `redmatic.db` next to `server.js`     | the SQLite database; created with the schema when missing, migrated at start. The old name `DB` works as well |
-| `IP2LOCATION_CSV` | `IP2LOCATION-LITE-DB1.CSV` next to it | the country database; without it no country is stored                                                         |
-| `TRUST_PROXY`     | `loopback, linklocal, uniquelocal`    | which peers may set `X-Forwarded-For`: Express' `trust proxy`, a hop count or a list                          |
-| `RATE_LIMIT`      | `10`                                  | telemetry POSTs per client address and hour, `0` turns it off                                                 |
+| Variable      | Default                               | Meaning                                                                                                       |
+| ------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `PORT`        | `8080`                                | HTTP port (plain HTTP: TLS is the reverse proxy's)                                                            |
+| `DB_PATH`     | `redmatic.db` next to `server.js`     | the SQLite database; created with the schema when missing, migrated at start. The old name `DB` works as well |
+| `DBIP_CSV`    | `dbip-country-lite.csv.gz` next to it | DB-IP's IP to Country Lite, gzipped or not; without it no country is stored; reloaded on `SIGHUP`             |
+| `BACKUP_DIR`  | empty: no backups                     | the directory of the daily backups (a host volume)                                                            |
+| `TRUST_PROXY` | `loopback, linklocal, uniquelocal`    | which peers may set `X-Forwarded-For`: Express' `trust proxy`, a hop count or a list                          |
+| `RATE_LIMIT`  | `10`                                  | telemetry POSTs per client address and hour, `0` turns it off                                                 |
 
 Once a day (checked at start and every hour) the server writes the day's aggregate snapshot into `daily_stats`
 ([docs/api.md](docs/api.md#get-datatrenddimensiondimensiondaysdays)). The first run after the upgrade also
@@ -29,9 +30,31 @@ backfills an estimated active curve from the existing rows; it takes about a ten
 installations.
 
 The database's directory must be writable by the server (SQLite's WAL files live next to it). In the image the
-country CSV is `/geo/IP2LOCATION-LITE-DB1.CSV`: baked in when the build context has the file, or mounted.
-`compose.example.yaml` shows the volumes, `build-push.sh` builds and pushes the image as `latest` and the package
-version. The container's `HEALTHCHECK` asks `/healthz`.
+country database is `/geo/dbip-country-lite.csv.gz`: mounted (see below), or baked in when the build context has the
+file. `compose.example.yaml` shows the volumes, `build-push.sh` builds and pushes the image as `latest` and the
+package version. The container's `HEALTHCHECK` asks `/healthz`.
+
+The log has no ids, countries or addresses: routine requests are counted and logged once a minute
+(`requests {"insert":3,"update":41}`), the daily job logs its counts, errors are logged in full.
+
+## On the host
+
+**Backups.** With `BACKUP_DIR` set (the image: mount a host directory at `/backup` and set `BACKUP_DIR=/backup`), the
+daily job writes `redmatic-YYYYMMDD.db` there with `VACUUM INTO`: a complete, compact SQLite file, consistent while
+the server writes. It keeps the newest 7 daily copies and the newest copy of each of the newest 8 weeks, and deletes
+older ones (only files named like a copy). The directory must be writable by the container's uid. Copying them off
+the host is up to you. To restore: stop the container, replace the database file with a copy (and remove the
+`-wal`/`-shm` files beside it), start it.
+
+**The country database.** [DB-IP](https://db-ip.com)'s free IP to Country Lite (CC BY 4.0, no account). The page
+carries the attribution the licence asks for. It is published monthly;
+`scripts/update-dbip.sh <dir>` downloads the current month's file (or the previous month's in the first days of a
+month), checks it, replaces `<dir>/dbip-country-lite.csv.gz` and, with `DBIP_CONTAINER` set, sends the container a
+`SIGHUP` so the server reloads it. A monthly cron line on the host:
+
+```sh
+0 5 3 * *  DBIP_CONTAINER=redmatic-telemetry /srv/redmatic-telemetry/update-dbip.sh /srv/redmatic-telemetry/geo
+```
 
 ## Rate limit
 
@@ -71,7 +94,8 @@ Tests and development use invented data only, never a copy of the live database.
 
 ## Credits
 
-This site or product includes IP2Location LITE data available from https://lite.ip2location.com.
+[IP Geolocation by DB-IP](https://db-ip.com): the country database, DB-IP's IP to Country Lite, under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
 
 ## License
 

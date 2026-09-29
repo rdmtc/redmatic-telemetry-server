@@ -4,3 +4,4 @@ redmatic.db
 server.key
 server.cert
 IP2LOCATION-LITE-DB1.CSV
+dbip-country-lite*.csv*

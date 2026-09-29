@@ -1,15 +1,17 @@
 'use strict';
 
+const fs = require('fs');
 const path = require('path');
 const http = require('http');
 
 const express = require('express');
-const Ip2cc = require('ip2countrycode');
 
 const pkg = require('./package.json');
 const {database, migrate, open} = require('./lib/db.js');
 const {aggregate, exportCsv, publicNodePattern} = require('./lib/stats.js');
 const {applyRetention, deleteInstallation} = require('./lib/retention.js');
+const {countryLookup} = require('./lib/geo.js');
+const backups = require('./lib/backup.js');
 const trends = require('./lib/trends.js');
 const {config} = require('./lib/config.js');
 
@@ -37,8 +39,10 @@ const notNodes = ['ccu', 'redmatic', 'node-red', 'nodejs', 'ain2', 'npm'];
  * Creates the Express app.
  * @param {object} options
  * @param {object} options.db the telemetry database (node:sqlite DatabaseSync), migrated
- * @param {{lookup: function(string): {code: string, country: string}}} options.ip2cc the country lookup
- * @param {function(...*)} [options.log] logger
+ * @param {{lookup: function(string): ?{code: string, country: string}}} options.geo the country lookup
+ * @param {function(...*)} [options.log] logger, for errors
+ * @param {function(string)} [options.count] counts a routine event (insert, update, …); by default a tally that the
+ *   log gets once a minute
  * @param {boolean|number|string} [options.trustProxy] Express' "trust proxy": which peers may set X-Forwarded-For
  * @param {{limit: number, windowMs: number}|false} [options.rateLimit] telemetry POSTs per client address and window
  * @param {number} [options.cacheSeconds] how long /data and the export are cached
@@ -47,14 +51,16 @@ const notNodes = ['ccu', 'redmatic', 'node-red', 'nodejs', 'ain2', 'npm'];
  */
 function createApp({
     db,
-    ip2cc,
+    geo,
     log = defaultLog,
+    count = tally(log),
     trustProxy = 'loopback, linklocal, uniquelocal',
     rateLimit = {limit: 10, windowMs: 3600 * 1000},
     cacheSeconds = defaultCacheSeconds,
     now = Date.now,
 }) {
     const app = express();
+    app.locals.count = count;
     const allowed = rateLimit ? rateLimiter(rateLimit) : () => true;
     const q = database(db);
     const cache = new Map();
@@ -145,7 +151,7 @@ function createApp({
             if (allowed(clientAddress(req))) {
                 return next();
             }
-            log('rate limited');
+            count('rate-limited');
             res.status(429).send('');
         },
         express.json({limit: '64kb'}),
@@ -154,7 +160,7 @@ function createApp({
             const uuid = String(req.get('x-redmatic-uuid') || '');
             const body = userAgent.startsWith('curl/') && uuidPattern.test(uuid) ? validate(req.body) : null;
             if (!body) {
-                log('invalid request');
+                count('invalid');
                 return res.status(400).send('');
             }
             store(uuid.toLowerCase(), body, clientAddress(req));
@@ -170,16 +176,16 @@ function createApp({
             if (allowed(clientAddress(req))) {
                 return next();
             }
-            log('rate limited');
+            count('rate-limited');
             res.status(429).send('');
         },
         (req, res) => {
             const uuid = String(req.get('x-redmatic-uuid') || '');
             if (!uuidPattern.test(uuid)) {
-                log('invalid request');
+                count('invalid');
                 return res.status(400).send('');
             }
-            log(deleteInstallation(q, uuid.toLowerCase()) ? 'delete' : 'delete unknown');
+            count(deleteInstallation(q, uuid.toLowerCase()) ? 'delete' : 'delete-unknown');
             res.status(204).send();
         },
     );
@@ -198,7 +204,7 @@ function createApp({
     }
 
     function store(uuid, {fields, nodes}, ip) {
-        const country = ip2cc.lookup(ip);
+        const country = geo.lookup(ip);
         const installation = {
             cc: (country && country.code) || null,
             country: (country && country.country) || null,
@@ -208,13 +214,13 @@ function createApp({
             const known = q.get('SELECT redmatic FROM installation WHERE uuid=?;', [uuid]);
             const i = installation;
             if (known) {
-                log('update', i.cc);
+                count('update');
                 q.run(
                     'UPDATE installation SET redmatic=?, ccu=?, platform=?, product=?, lite=?, cc=?, country=?, updated=CURRENT_TIMESTAMP, counter=counter+1 WHERE uuid=?;',
                     [i.redmatic, i.ccu, i.platform, i.product, i.lite, i.cc, i.country, uuid],
                 );
             } else {
-                log('insert', i.cc);
+                count('insert');
                 q.run(
                     'INSERT INTO installation (uuid, redmatic, initial, ccu, platform, product, lite, created, counter, cc, country) VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP,0,?,?);',
                     [uuid, i.redmatic, i.redmatic, i.ccu, i.platform, i.product, i.lite, i.cc, i.country],
@@ -341,10 +347,35 @@ function badge(installs) {
 }
 
 /**
+ * Counts routine events and logs them once a minute as one line, `requests {"insert":3,"update":41}`: no ids, no
+ * countries, no addresses (task 10). flush() logs at once, stop() ends the timer.
+ */
+function tally(log, intervalMs = 60 * 1000) {
+    let counts = {};
+    const flush = () => {
+        if (Object.keys(counts).length) {
+            log('requests', JSON.stringify(counts));
+            counts = {};
+        }
+    };
+    const timer = setInterval(flush, intervalMs);
+    timer.unref();
+    const count = (event) => {
+        counts[event] = (counts[event] || 0) + 1;
+    };
+    count.flush = flush;
+    count.stop = () => {
+        clearInterval(timer);
+        flush();
+    };
+    return count;
+}
+
+/**
  * Runs the daily job now and then every hour: task 11's snapshot first, so the counts of what the retention (task 9)
  * deletes are kept; each run writes what the day still lacks. Logs counts only. Returns a function that stops it.
  */
-function startDaily(db, {log = defaultLog, now = Date.now, intervalMs = 3600 * 1000} = {}) {
+function startDaily(db, {log = defaultLog, now = Date.now, intervalMs = 3600 * 1000, backupDir = ''} = {}) {
     const q = database(db);
     const run = () => {
         try {
@@ -352,6 +383,22 @@ function startDaily(db, {log = defaultLog, now = Date.now, intervalMs = 3600 * 1
             const done = trends.daily(q, at);
             if (done.new || done.backfilled || done.snapshot) {
                 log('daily', JSON.stringify(done));
+            }
+            // the backup before the retention: yesterday's rows are in one copy more if the retention goes wrong
+            if (backupDir) {
+                try {
+                    const file = backups.backup(db, backupDir, at);
+                    const removed = backups.rotate(backupDir);
+                    if (file || removed.length) {
+                        const size = file ? fs.statSync(file).size : 0;
+                        log(
+                            'backup',
+                            JSON.stringify({file: file && path.basename(file), size, removed: removed.length}),
+                        );
+                    }
+                } catch (err) {
+                    log('backup failed:', err.message);
+                }
             }
             const deleted = applyRetention(q, at);
             if (deleted.installations || deleted.nodes) {
@@ -387,24 +434,17 @@ function ts() {
     );
 }
 
-/**
- * The country lookup from the IP2Location CSV. Without the file the server still runs and stores no country.
- */
-function countryLookup(file) {
-    try {
-        return new Ip2cc(file);
-    } catch (err) {
-        defaultLog('no country lookup:', err.message);
-        return {lookup: () => null};
-    }
-}
-
 function main() {
-    const {port, dbPath, ip2locationCsv, trustProxy, rateLimit} = config();
+    const {port, dbPath, dbipCsv, backupDir, trustProxy, rateLimit} = config();
     const db = open(dbPath);
-    const ip2cc = countryLookup(ip2locationCsv);
-    const app = createApp({db, ip2cc, trustProxy, rateLimit});
-    startDaily(db);
+    const geo = countryLookup(dbipCsv, defaultLog);
+    const app = createApp({db, geo, trustProxy, rateLimit});
+    startDaily(db, {backupDir});
+    // the monthly update script sends SIGHUP after it replaced the file
+    process.on('SIGHUP', () => {
+        defaultLog('received SIGHUP');
+        geo.reload();
+    });
     http.createServer(app).listen(port, () => {
         defaultLog(pkg.name, 'listening on port', port);
     });
@@ -412,6 +452,7 @@ function main() {
     const exit = (signal) => {
         process.on(signal, () => {
             defaultLog('received', signal);
+            app.locals.count.stop();
             db.close();
             process.exit(0);
         });
@@ -426,6 +467,7 @@ if (require.main === module) {
 
 module.exports = {
     createApp,
+    tally,
     startDaily,
     migrate,
     validate,

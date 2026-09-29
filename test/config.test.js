@@ -13,7 +13,8 @@ describe('configuration from the environment (task 5)', () => {
         const c = config({});
         assert.equal(c.port, 8080);
         assert.equal(c.dbPath, path.join(root, 'redmatic.db'));
-        assert.equal(c.ip2locationCsv, path.join(root, 'IP2LOCATION-LITE-DB1.CSV'));
+        assert.equal(c.dbipCsv, path.join(root, 'dbip-country-lite.csv.gz'));
+        assert.equal(c.backupDir, '');
         assert.equal(c.trustProxy, 'loopback, linklocal, uniquelocal');
         assert.deepEqual(c.rateLimit, {limit: 10, windowMs: 3600000});
     });
@@ -22,13 +23,15 @@ describe('configuration from the environment (task 5)', () => {
         const c = config({
             PORT: '9000',
             DB_PATH: '/data/t.db',
-            IP2LOCATION_CSV: '/geo/x.csv',
+            DBIP_CSV: '/geo/x.csv.gz',
+            BACKUP_DIR: '/backup',
             TRUST_PROXY: '1',
             RATE_LIMIT: '0',
         });
         assert.equal(c.port, 9000);
         assert.equal(c.dbPath, '/data/t.db');
-        assert.equal(c.ip2locationCsv, '/geo/x.csv');
+        assert.equal(c.dbipCsv, '/geo/x.csv.gz');
+        assert.equal(c.backupDir, '/backup');
         assert.equal(c.trustProxy, 1);
         assert.equal(c.rateLimit, false);
         assert.equal(config({TRUST_PROXY: '172.16.0.0/12'}).trustProxy, '172.16.0.0/12');

@@ -15,7 +15,8 @@ Per installation (`installation`):
 - the telemetry id;
 - the RedMatic version (the current one and the first one seen), the CCU firmware version, product and platform,
   openccu-lite's version;
-- the country (code and name), looked up from the client address at the time of the request. **The address itself is
+- the country (code and name), looked up from the client address at the time of the request in DB-IP's IP to
+  Country Lite database, on the server itself (no request goes elsewhere). **The address itself is
   not stored**, and it is not in the logs;
 - the time of the first and of the last contact, and a counter of contacts.
 
@@ -29,7 +30,8 @@ single installation shows. These counts are kept when installation rows are dele
 
 Not stored: the address, `deviceTypes`, the Node.js and Node-RED versions.
 
-The server's log has no ids and no addresses: one line per insert or update with the country code, and errors.
+The server's log has no ids, no addresses and no countries: counts of the requests once a minute, the daily job's
+counts, and errors.
 
 ## Who sees what
 
@@ -49,7 +51,8 @@ The server's log has no ids and no addresses: one line per insert or update with
 - **Modules:** only public ones are stored (`redmatic-*`, `node-red-*`, `@scope/node-red-*`), the ones the page
   shows. The modules of other names that older versions of the server stored were deleted once (schema migration 5).
 - **The daily counts** are kept.
-- The server's backups keep a copy for as long as they are kept.
+- **Backups:** a copy of the database a day, on the server's host, kept 7 days, and one a week kept 8 weeks. A
+  deleted installation is gone from the last copy 8 weeks later.
 
 ## Deletion
 

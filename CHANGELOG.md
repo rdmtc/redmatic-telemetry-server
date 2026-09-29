@@ -15,7 +15,7 @@
 - Schema migrations (`schema/`), indexes, WAL; `/data` accepts only the page's timespans and is cached for five
   minutes.
 - The image: multi-stage on `node:24-slim`, a `HEALTHCHECK` on `/healthz`, configuration by environment
-  (`DB_PATH`, `IP2LOCATION_CSV`, `TRUST_PROXY`, `RATE_LIMIT`; `DB` still works).
+  (`DB_PATH`, `DBIP_CSV`, `BACKUP_DIR`, `TRUST_PROXY`, `RATE_LIMIT`; `DB` still works).
 - Tests, lint and CI.
 - Daily aggregate snapshots (`daily_stats`, counts only): active installations (seen in 180 days) per RedMatic
   version, CCU version, family, openccu-lite version, platform and country, and new installations per day;
@@ -26,3 +26,8 @@
   once (migration 5). `DELETE /` with the `X-RedMatic-uuid` header deletes an installation on its request.
 - `/total.svg` counts the installations active in the last 365 days instead of every row ever; `/data` counts
   `@scope/node-red-*` modules too.
+- The country comes from DB-IP's IP to Country Lite (CC BY 4.0, no account; IPv6 too) instead of IP2Location LITE:
+  `DBIP_CSV` replaces `IP2LOCATION_CSV`, `scripts/update-dbip.sh` fetches the monthly file, `SIGHUP` reloads it. The
+  `ip2countrycode` dependency is gone.
+- Daily backups with `VACUUM INTO` into `BACKUP_DIR` (7 daily, 8 weekly).
+- The log has no ids and no countries: requests are counted once a minute; errors in full.

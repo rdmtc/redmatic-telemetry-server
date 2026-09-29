@@ -8,9 +8,9 @@ const path = require('path');
 const http = require('http');
 
 const {DatabaseSync} = require('node:sqlite');
-const Ip2cc = require('ip2countrycode');
 
 const {createApp, migrate} = require('../server.js');
+const {countryLookup} = require('../lib/geo.js');
 
 // The live database before the migrations: the 2019 schema file plus cc and country, added by hand.
 const liveColumns = [
@@ -109,10 +109,10 @@ async function startServer(options = {}) {
     const db = options.db || (await makeDb());
     migrate(db.raw);
     const logs = [];
-    const ip2cc = new Ip2cc(path.join(__dirname, 'fixtures', 'ip2location.csv'));
+    const geo = countryLookup(path.join(__dirname, 'fixtures', 'dbip-country.csv'));
     const app = createApp({
         db: db.raw,
-        ip2cc,
+        geo,
         log: (...args) => logs.push(args.join(' ')),
         rateLimit: false,
         cacheSeconds: 0,
@@ -126,7 +126,10 @@ async function startServer(options = {}) {
         logs,
         base,
         fetch: (url, init) => fetch(base + url, init),
+        /** logs the tally of routine events now */
+        flush: () => app.locals.count.flush(),
         async close() {
+            app.locals.count.stop();
             await new Promise((resolve) => server.close(resolve));
             await db.close();
             fs.rmSync(db.dir, {recursive: true, force: true});

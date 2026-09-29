@@ -155,7 +155,8 @@ describe('DELETE / (task 9)', () => {
         assert.equal(res.status, 204);
         assert.deepEqual(await ids(server.db), [uuid(2)]);
         assert.equal(await count(server.db, 'node'), 2);
-        assert.ok(server.logs.includes('delete'));
+        server.flush();
+        assert.ok(server.logs.includes('requests {"insert":2,"delete":1}'), server.logs.join('|'));
         assert.ok(server.logs.every((l) => !l.includes('00000000-')));
     });
 

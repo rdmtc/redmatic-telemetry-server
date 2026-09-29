@@ -4,9 +4,10 @@ FROM node:24-slim AS deps
 WORKDIR /usr/src/app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts
-# The country CSV is not in the repository: baked in when the build context has it (as before), else mounted at /geo.
+# The country database is not in the repository: mounted at /geo (scripts/update-dbip.sh), or baked in when the
+# build context has it.
 COPY . /tmp/context
-RUN mkdir -p /geo && (cp /tmp/context/IP2LOCATION-LITE-DB1.CSV /geo/ 2>/dev/null || true)
+RUN mkdir -p /geo && (cp /tmp/context/dbip-country-lite.csv.gz /geo/ 2>/dev/null || true)
 
 FROM node:24-slim
 # the uid/gid the host's volumes belong to
@@ -15,7 +16,7 @@ ARG UID=996
 # /usr/src/app/redmatic.db, as before.
 ENV NODE_ENV=production \
     PORT=8080 \
-    IP2LOCATION_CSV=/geo/IP2LOCATION-LITE-DB1.CSV
+    DBIP_CSV=/geo/dbip-country-lite.csv.gz
 RUN groupmod -g "$UID" node && usermod -u "$UID" -g "$UID" node \
     && mkdir -p /data && chown node:node /data
 COPY --from=deps /geo /geo

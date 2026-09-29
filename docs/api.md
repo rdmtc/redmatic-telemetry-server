@@ -41,7 +41,8 @@ Body (the output of RedMatic's `bin/redmaticVersions`):
 | `nodejs`, `node-red`, `npm`, `ain2` | —                      | dropped                                                                                                                                                                                                                                                        |
 | every other key                     | a `node` row           | an installed npm module and its version; at most 500. Only public modules are stored: `redmatic-*`, `node-red-*`, `@scope/node-red-*`. Any other key, a key that is not an npm package name, or a version that is not a string of ≤ 64 characters, is left out |
 
-The country comes from the client address (`req.ip`, see `TRUST_PROXY`); the address itself is not stored.
+The country comes from the client address (`req.ip`, see `TRUST_PROXY`; IPv4 and IPv6) and DB-IP's IP to Country
+Lite; the address itself is not stored, and neither is it logged.
 
 Answers: `200` stored (a new installation or an update of a known one); `400` a missing or wrong header, or a body
 that breaks a rule (nothing is stored); `413` a body over 64 kB; `429` more than `RATE_LIMIT` POSTs from the address
