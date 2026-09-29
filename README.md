@@ -31,8 +31,9 @@ installations.
 
 The database's directory must be writable by the server (SQLite's WAL files live next to it). In the image the
 country database is `/geo/dbip-country-lite.csv.gz`: mounted (see below), or baked in when the build context has the
-file. `compose.example.yaml` shows the volumes, `build-push.sh` builds and pushes the image as `latest` and the
-package version. The container's `HEALTHCHECK` asks `/healthz`.
+file. `compose.example.yaml` shows the volumes. The image is published to `ghcr.io/rdmtc/redmatic-telemetry-server` by
+the `docker` workflow: `edge` and the short commit sha for every push to master, `latest`, `<version>` and
+`<major>.<minor>` for a tag `v<version>` (amd64 and arm64). `build-push.sh` still builds and pushes by hand. The container's `HEALTHCHECK` asks `/healthz`.
 
 The log has no ids, countries or addresses: routine requests are counted and logged once a minute
 (`requests {"insert":3,"update":41}`), the daily job logs its counts, errors are logged in full.
