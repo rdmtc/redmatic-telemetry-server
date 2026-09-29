@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM node:24-slim AS deps
+FROM node:26-slim AS deps
 WORKDIR /usr/src/app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts
@@ -9,7 +9,7 @@ RUN npm ci --omit=dev --ignore-scripts
 COPY . /tmp/context
 RUN mkdir -p /geo && (cp /tmp/context/dbip-country-lite.csv.gz /geo/ 2>/dev/null || true)
 
-FROM node:24-slim
+FROM node:26-slim
 # the uid/gid the host's volumes belong to
 ARG UID=996
 # DB_PATH is not set here: the old DB variable keeps working, and without either the database is
