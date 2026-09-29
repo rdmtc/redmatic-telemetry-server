@@ -3,7 +3,7 @@
 const {describe, it, before, after} = require('node:test');
 const assert = require('node:assert/strict');
 
-const {formatInstalls, normalizePlatform, exportCsv} = require('../server.js');
+const {formatInstalls, normalizePlatform, exportCsv, validate, rateLimiter} = require('../server.js');
 const {startServer, insertInstallation, uuid, telemetryBody, postTelemetry, waitFor} = require('./helpers.js');
 
 describe('static page', () => {
@@ -382,5 +382,107 @@ describe('a closed database (B-4)', () => {
         assert.equal((await server.fetch('/export.json')).status, 500);
         assert.equal((await postTelemetry(server, 1, telemetryBody())).status, 500);
         assert.equal((await server.fetch('/')).status, 200);
+    });
+});
+
+describe('validation of the telemetry body (task 6)', () => {
+    let server;
+    before(async () => {
+        server = await startServer();
+    });
+    after(() => server.close());
+
+    const count = async () => (await server.db.get('SELECT COUNT(*) AS n FROM installation;')).n;
+
+    it('stores a normal RedMatic body', async () => {
+        assert.equal((await postTelemetry(server, 1, telemetryBody())).status, 200);
+        assert.equal(await count(), 1);
+    });
+
+    it('refuses HTML in a stored field, and stores nothing', async () => {
+        const html = '<img src=x onerror=alert(1)>';
+        for (const body of [
+            telemetryBody({ccu: {VERSION: '3.89.11', PRODUCT: html, PLATFORM: 'rpi4-aarch64'}}),
+            telemetryBody({ccu: {VERSION: html, PRODUCT: 'ccu3', PLATFORM: 'rpi4-aarch64'}}),
+            telemetryBody({ccu: {VERSION: '3.89.11', PRODUCT: 'ccu3', PLATFORM: html}}),
+            telemetryBody({redmatic: html}),
+            telemetryBody({redmatic: 8}),
+        ]) {
+            assert.equal((await postTelemetry(server, 2, body)).status, 400);
+        }
+        assert.equal(await count(), 1);
+    });
+
+    it('refuses more than 500 nodes', async () => {
+        const nodes = {};
+        // 499 + the two of telemetryBody() = 501
+        for (let i = 0; i < 499; i++) {
+            nodes['node-red-contrib-n' + i] = '1.0.0';
+        }
+        assert.equal((await postTelemetry(server, 3, telemetryBody(nodes))).status, 400);
+        delete nodes['node-red-contrib-n0'];
+        assert.equal((await postTelemetry(server, 3, telemetryBody(nodes))).status, 200);
+        assert.equal(await count(), 2);
+    });
+
+    it('refuses a body over 64 kB', async () => {
+        const res = await postTelemetry(server, 4, telemetryBody({'node-red-contrib-big': 'x'.repeat(70000)}));
+        assert.equal(res.status, 413);
+    });
+
+    it('leaves out a node that is not a package name or has no short version', async () => {
+        const body = telemetryBody({
+            'node-red-contrib-samsungTV': '1.0.0',
+            '@scope/node-red-contrib-x': '0.1.0',
+            '<b>node-red-contrib-x</b>': '1.0.0',
+            'node-red-contrib-y ': '1.0.0',
+            'node-red-contrib-z': {nested: true},
+            'node-red-contrib-long': '1'.repeat(65),
+        });
+        assert.equal((await postTelemetry(server, 5, body)).status, 200);
+        const rows = await server.db.all('SELECT name FROM node WHERE installation_uuid=? ORDER BY name;', [uuid(5)]);
+        assert.deepEqual(
+            rows.map((r) => r.name),
+            ['@scope/node-red-contrib-x', 'node-red-contrib-ccu', 'node-red-contrib-samsungTV', 'redmatic-homekit'],
+        );
+    });
+
+    it('accepts missing or empty CCU fields, as old clients send them', () => {
+        assert.ok(validate({redmatic: '4.0.0', ccu: {}}));
+        assert.ok(validate({redmatic: '4.0.0', ccu: {VERSION: '2.45.7', PRODUCT: '', PLATFORM: ''}}));
+        assert.ok(
+            validate({redmatic: '8.0.0-beta.1', ccu: {VERSION: '3.89.11.20260919', PRODUCT: 'raspmatic_odroid-n2'}}),
+        );
+        assert.equal(validate({redmatic: '8.0.0', ccu: 'ccu3'}), null);
+        assert.equal(validate(null), null);
+    });
+});
+
+describe('rate limit (task 6)', () => {
+    let server;
+    before(async () => {
+        server = await startServer({app: {rateLimit: {limit: 10, windowMs: 3600 * 1000}}});
+    });
+    after(() => server.close());
+
+    it('answers 429 to the 11th POST in an hour from one address', async () => {
+        for (let i = 1; i <= 10; i++) {
+            const res = await postTelemetry(server, i, telemetryBody(), {'X-Forwarded-For': '192.0.2.20'});
+            assert.equal(res.status, 200);
+        }
+        const res = await postTelemetry(server, 11, telemetryBody(), {'X-Forwarded-For': '192.0.2.20'});
+        assert.equal(res.status, 429);
+        // another address is not affected
+        const other = await postTelemetry(server, 12, telemetryBody(), {'X-Forwarded-For': '192.0.2.21'});
+        assert.equal(other.status, 200);
+    });
+
+    it('opens again in the next window', () => {
+        let time = 0;
+        const allowed = rateLimiter({limit: 2, windowMs: 1000, now: () => time});
+        assert.ok(allowed('a') && allowed('a'));
+        assert.equal(allowed('a'), false);
+        time = 1000;
+        assert.ok(allowed('a'));
     });
 });

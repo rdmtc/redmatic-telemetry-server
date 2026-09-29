@@ -17,6 +17,15 @@ const exportMaxAge = 3600;
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// What a telemetry body may carry (task 6). Every stored string ends up on the public page, so nothing else passes.
+const versionPattern = /^[0-9A-Za-z][0-9A-Za-z.+_~-]{0,63}$/;
+const namePattern = /^[A-Za-z0-9_.+-]{1,40}$/;
+// npm package names; legacy names may have capitals
+const nodeNamePattern = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/i;
+const maxNodes = 500;
+// Keys of the body that are not installed modules
+const notNodes = ['ccu', 'redmatic', 'node-red', 'nodejs', 'ain2', 'npm'];
+
 /**
  * Creates the Express app.
  * @param {object} options
@@ -24,10 +33,18 @@ const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{1
  * @param {{lookup: function(string): {code: string, country: string}}} options.ip2cc the country lookup
  * @param {function(...*)} [options.log] logger
  * @param {boolean|number|string} [options.trustProxy] Express' "trust proxy": which peers may set X-Forwarded-For
+ * @param {{limit: number, windowMs: number}|false} [options.rateLimit] telemetry POSTs per client address and window
  * @returns {object} the Express app
  */
-function createApp({db, ip2cc, log = defaultLog, trustProxy = 'loopback, linklocal, uniquelocal'}) {
+function createApp({
+    db,
+    ip2cc,
+    log = defaultLog,
+    trustProxy = 'loopback, linklocal, uniquelocal',
+    rateLimit = {limit: 10, windowMs: 3600 * 1000},
+}) {
     const app = express();
+    const allowed = rateLimit ? rateLimiter(rateLimit) : () => true;
     const q = promisify(db);
     const exclusive = mutex();
     let exportCache = null;
@@ -92,24 +109,23 @@ function createApp({db, ip2cc, log = defaultLog, trustProxy = 'loopback, linkloc
 
     app.post(
         '/',
-        bodyParser.json(),
+        (req, res, next) => {
+            if (allowed(clientAddress(req))) {
+                return next();
+            }
+            log('rate limited');
+            res.status(429).send('');
+        },
+        bodyParser.json({limit: '64kb'}),
         route(async (req, res) => {
             const userAgent = String(req.get('user-agent') || '');
             const uuid = String(req.get('x-redmatic-uuid') || '');
-            const data = req.body;
-            if (
-                !userAgent.startsWith('curl/') ||
-                !uuidPattern.test(uuid) ||
-                !data ||
-                typeof data !== 'object' ||
-                !data.ccu ||
-                typeof data.ccu !== 'object' ||
-                !data.redmatic
-            ) {
+            const body = userAgent.startsWith('curl/') && uuidPattern.test(uuid) ? validate(req.body) : null;
+            if (!body) {
                 log('invalid request');
                 return res.status(400).send('');
             }
-            await store(uuid.toLowerCase(), data, clientAddress(req));
+            await store(uuid.toLowerCase(), body, clientAddress(req));
             res.send('');
         }),
     );
@@ -127,21 +143,13 @@ function createApp({db, ip2cc, log = defaultLog, trustProxy = 'loopback, linkloc
         return String(req.ip || '').replace(/^::ffff:/, '');
     }
 
-    async function store(uuid, data, ip) {
+    async function store(uuid, {fields, nodes}, ip) {
         const country = ip2cc.lookup(ip);
         const installation = {
             cc: (country && country.code) || null,
             country: (country && country.country) || null,
-            uuid,
-            redmatic: data.redmatic,
-            ccu: data.ccu.VERSION,
-            platform: normalizePlatform(data.ccu.PLATFORM),
-            product: data.ccu.PRODUCT,
+            ...fields,
         };
-        const nodes = {...data};
-        for (const key of ['ccu', 'redmatic', 'node-red', 'nodejs', 'ain2', 'npm']) {
-            delete nodes[key];
-        }
         await exclusive(() =>
             transaction(q, async () => {
                 const known = await q.get('SELECT redmatic FROM installation WHERE uuid=?;', [uuid]);
@@ -172,6 +180,74 @@ function createApp({db, ip2cc, log = defaultLog, trustProxy = 'loopback, linkloc
     }
 
     return app;
+}
+
+/**
+ * Checks a telemetry body. Returns the installation's fields and its nodes, or null when the body is refused.
+ * A node entry that is not an npm package name with a short version string is left out, not refused: old
+ * installations send local modules with odd names, and those are never shown.
+ */
+function validate(data) {
+    const isObject = (o) => o !== null && typeof o === 'object' && !Array.isArray(o);
+    const optional = (value, pattern) =>
+        value === undefined || value === null || value === '' || (typeof value === 'string' && pattern.test(value));
+    if (!isObject(data) || !isObject(data.ccu)) {
+        return null;
+    }
+    const {ccu} = data;
+    if (
+        typeof data.redmatic !== 'string' ||
+        !versionPattern.test(data.redmatic) ||
+        !optional(ccu.VERSION, versionPattern) ||
+        !optional(ccu.PRODUCT, namePattern) ||
+        !optional(ccu.PLATFORM, namePattern)
+    ) {
+        return null;
+    }
+    const names = Object.keys(data).filter((key) => !notNodes.includes(key));
+    if (names.length > maxNodes) {
+        return null;
+    }
+    const nodes = {};
+    for (const name of names) {
+        const version = data[name];
+        if (name.length <= 214 && nodeNamePattern.test(name) && typeof version === 'string' && version.length <= 64) {
+            nodes[name] = version;
+        }
+    }
+    return {
+        fields: {
+            redmatic: data.redmatic,
+            ccu: ccu.VERSION,
+            platform: normalizePlatform(ccu.PLATFORM),
+            product: ccu.PRODUCT,
+        },
+        nodes,
+    };
+}
+
+/**
+ * A fixed-window counter per key: true while the key has had at most `limit` calls in the current window.
+ */
+function rateLimiter({limit, windowMs, now = Date.now}) {
+    const windows = new Map();
+    return (key) => {
+        const time = now();
+        let entry = windows.get(key);
+        if (!entry || entry.reset <= time) {
+            if (windows.size >= 10000) {
+                for (const [k, e] of windows) {
+                    if (e.reset <= time) {
+                        windows.delete(k);
+                    }
+                }
+            }
+            entry = {count: 0, reset: time + windowMs};
+            windows.set(key, entry);
+        }
+        entry.count += 1;
+        return entry.count <= limit;
+    };
 }
 
 /** An Express handler from an async function: a rejection goes to the error handler (Express 4 does not). */
@@ -358,9 +434,12 @@ function main() {
     const ip2cc = new Ip2cc(path.join(__dirname, 'IP2LOCATION-LITE-DB1.CSV'));
 
     const trustProxy = process.env.TRUST_PROXY;
+    // telemetry POSTs per client address and hour; 0 turns the limit off
+    const rateLimit = process.env.RATE_LIMIT === undefined ? 10 : parseInt(process.env.RATE_LIMIT, 10) || 0;
     const app = createApp({
         db,
         ip2cc,
+        rateLimit: rateLimit > 0 ? {limit: rateLimit, windowMs: 3600 * 1000} : false,
         ...(trustProxy ? {trustProxy: /^\d+$/.test(trustProxy) ? parseInt(trustProxy, 10) : trustProxy} : {}),
     });
     http.createServer(app).listen(port, () => {
@@ -384,4 +463,12 @@ if (require.main === module) {
     main();
 }
 
-module.exports = {createApp, aggregate, exportCsv, normalizePlatform, formatInstalls};
+module.exports = {
+    createApp,
+    validate,
+    rateLimiter,
+    aggregate,
+    exportCsv,
+    normalizePlatform,
+    formatInstalls,
+};

@@ -1,11 +1,18 @@
 $(document).ready(() => {
+    // Every value on this page was sent by a client: never insert it as HTML unescaped.
+    function esc(value) {
+        return String(value === null || value === undefined ? '' : value).replace(
+            /[&<>"']/g,
+            (c) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'})[c],
+        );
+    }
     function getData() {
         const timespan = $('#timespan').val();
 
         location.hash = '#' + timespan;
 
         $.getJSON('data?timespan=' + timespan, (data) => {
-            $('#total').html(data.total);
+            $('#total').text(data.total);
 
             $('#redmatic-versions-table').html('');
             $('#ccu-products-table').html('');
@@ -53,7 +60,7 @@ $(document).ready(() => {
                 const [name, count] = node;
                 let percent = Math.round((100 * count) / data.total);
                 $('#redmatic-versions-table').append(
-                    `<tr><td>${name}</td><td class="count">${count}</td><td class="count">(${percent}%)</td></tr>`,
+                    `<tr><td>${esc(name)}</td><td class="count">${esc(count)}</td><td class="count">(${percent}%)</td></tr>`,
                 );
             });
 
@@ -61,7 +68,7 @@ $(document).ready(() => {
                 const [name, count] = node;
                 let percent = Math.round((100 * count) / data.total);
                 $('#ccu-products-table').append(
-                    `<tr><td>${name}</td><td class="count">${count}</td><td class="count">(${percent}%)</td></tr>`,
+                    `<tr><td>${esc(name)}</td><td class="count">${esc(count)}</td><td class="count">(${percent}%)</td></tr>`,
                 );
             });
 
@@ -69,7 +76,7 @@ $(document).ready(() => {
                 const [name, count] = node;
                 let percent = Math.round((100 * count) / data.total);
                 $('#nodes').append(
-                    `<tr><td>${name}</td><td class="count">${count}</td><td class="count">(${percent}%)</td></tr>`,
+                    `<tr><td>${esc(name)}</td><td class="count">${esc(count)}</td><td class="count">(${percent}%)</td></tr>`,
                 );
             });
 
@@ -77,7 +84,7 @@ $(document).ready(() => {
                 const [name, count] = v;
                 let percent = Math.round((100 * count) / data.total);
                 $('#ccu-versions-table').append(
-                    `<tr><td>${name}</td><td class="count">${count}</td><td class="count">(${percent}%)</td></tr>`,
+                    `<tr><td>${esc(name)}</td><td class="count">${esc(count)}</td><td class="count">(${percent}%)</td></tr>`,
                 );
             });
 
@@ -85,7 +92,7 @@ $(document).ready(() => {
                 const [name, count] = v;
                 let percent = Math.round((100 * count) / data.total);
                 $('#ccu-platforms-table').append(
-                    `<tr><td>${name}</td><td class="count">${count}</td><td class="count">(${percent}%)</td></tr>`,
+                    `<tr><td>${esc(name)}</td><td class="count">${esc(count)}</td><td class="count">(${percent}%)</td></tr>`,
                 );
             });
 
@@ -95,7 +102,7 @@ $(document).ready(() => {
                 let country =
                     cc && cc !== '-' && cc !== '--' ? flag(String(cc).replace('UK', 'GB')) + (name || '') : '--';
                 $('#countries').append(
-                    `<tr><td>${country}</td><td class="count">${count}</td><td class="count">(${percent}%)</td></tr>`,
+                    `<tr><td>${esc(country)}</td><td class="count">${esc(count)}</td><td class="count">(${percent}%)</td></tr>`,
                 );
             });
 
@@ -126,7 +133,7 @@ $(document).ready(() => {
             $.plot(
                 '#redmatic-versions',
                 data.versions.map((a) => {
-                    return {label: a[0], data: a[1]};
+                    return {label: esc(a[0]), data: a[1]};
                 }),
                 pieConfig,
             );
@@ -134,7 +141,7 @@ $(document).ready(() => {
             $.plot(
                 '#ccu-versions',
                 data.ccuVersions.map((a) => {
-                    return {label: a[0], data: a[1]};
+                    return {label: esc(a[0]), data: a[1]};
                 }),
                 pieConfig,
             );
@@ -142,7 +149,7 @@ $(document).ready(() => {
             $.plot(
                 '#ccu-platforms',
                 data.platforms.map((a) => {
-                    return {label: a[0], data: a[1]};
+                    return {label: esc(a[0]), data: a[1]};
                 }),
                 pieConfig,
             );
@@ -150,7 +157,7 @@ $(document).ready(() => {
             $.plot(
                 '#ccu-products',
                 data.products.map((a) => {
-                    return {label: a[0], data: a[1]};
+                    return {label: esc(a[0]), data: a[1]};
                 }),
                 pieConfig,
             );

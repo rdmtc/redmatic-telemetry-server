@@ -93,7 +93,13 @@ async function startServer(options = {}) {
     const db = options.db || (await makeDb());
     const logs = [];
     const ip2cc = new Ip2cc(path.join(__dirname, 'fixtures', 'ip2location.csv'));
-    const app = createApp({db: db.raw, ip2cc, log: (...args) => logs.push(args.join(' ')), ...options.app});
+    const app = createApp({
+        db: db.raw,
+        ip2cc,
+        log: (...args) => logs.push(args.join(' ')),
+        rateLimit: false,
+        ...options.app,
+    });
     const server = http.createServer(app);
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     const base = 'http://127.0.0.1:' + server.address().port;
