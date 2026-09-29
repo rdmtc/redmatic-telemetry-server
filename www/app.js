@@ -53,7 +53,8 @@ function share(count, total) {
     return p > 0 && p < 1 ? '<1%' : Math.round(p) + '%';
 }
 
-const shown = (value) => (value === null || value === undefined || value === '' ? '(none)' : String(value));
+// a missing value: the installations from before RedMatic sent the ccu block, for example
+const shown = (value) => (value === null || value === undefined || value === '' ? 'unknown' : String(value));
 
 // ---- versions ------------------------------------------------------------------------------------------------------
 
