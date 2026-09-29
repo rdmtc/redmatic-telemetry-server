@@ -16,7 +16,9 @@ body {
 #redmatic-versions,
 #ccu-versions,
 #ccu-platforms,
-#ccu-products {
+#ccu-products,
+#families,
+#lite-versions {
     width: calc(100vw - 44px);
     height: calc(100vw - 36px);
 }
@@ -29,7 +31,9 @@ body {
     #redmatic-versions,
     #ccu-versions,
     #ccu-platforms,
-    #ccu-products {
+    #ccu-products,
+    #families,
+    #lite-versions {
         width: calc(50vw - 36px);
         height: calc(50vw - 36px);
     }
@@ -75,4 +79,9 @@ tr:nth-child(odd) {
     height: 50%;
     background-color: white;
     margin: 4px;
+}
+
+.lite {
+    color: #666;
+    font-size: 90%;
 }

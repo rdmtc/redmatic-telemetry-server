@@ -172,8 +172,8 @@ describe('GET /data', () => {
             ['AT', 'Austria', 1],
         ]);
         assert.deepEqual(d.ccuVersions, [
-            ['3.89.11', 3],
-            ['3.87.6', 1],
+            ['3.89.11', 3, 0],
+            ['3.87.6', 1, 0],
         ]);
     });
 
@@ -484,5 +484,86 @@ describe('rate limit (task 6)', () => {
         assert.equal(allowed('a'), false);
         time = 1000;
         assert.ok(allowed('a'));
+    });
+});
+
+describe('openccu-lite (task 2)', () => {
+    let server;
+    before(async () => {
+        server = await startServer();
+    });
+    after(() => server.close());
+
+    const lite = (n) => server.db.get('SELECT product, platform, lite FROM installation WHERE uuid=?;', [uuid(n)]);
+    const body = (product, liteVersion, platform = 'rpi4-aarch64') =>
+        telemetryBody({ccu: {VERSION: '3.89.11', PRODUCT: product, PLATFORM: platform, LITE: liteVersion}});
+
+    it('stores ccu.LITE and counts a lite system everywhere', async () => {
+        assert.equal((await postTelemetry(server, 1, body('lite-rpi4', '1.0.0-dev.31'))).status, 200);
+        assert.deepEqual({...(await lite(1))}, {product: 'lite-rpi4', platform: 'rpi4-aarch64', lite: '1.0.0-dev.31'});
+        await postTelemetry(server, 2, body('lite-ova', '1.0.0-beta.0', 'ova-x86_64'));
+        await postTelemetry(server, 3, body('ccu3', undefined, 'ccu3-armv7l'));
+        await postTelemetry(server, 4, body('raspmatic_rpi4', undefined));
+        await postTelemetry(server, 5, body('rpi5', undefined, 'rpi5-aarch64'));
+        await postTelemetry(server, 6, body('pivccu3', undefined, 'lxc-aarch64'));
+        await postTelemetry(server, 7, body('', undefined, ''));
+
+        const d = await (await server.fetch('/data?timespan=7')).json();
+        assert.equal(d.total, 7);
+        assert.deepEqual(
+            d.products.find((p) => p[0] === 'lite-rpi4'),
+            ['lite-rpi4', 1],
+        );
+        assert.deepEqual(d.liteVersions, [
+            ['1.0.0-dev.31', 1],
+            ['1.0.0-beta.0', 1],
+        ]);
+        assert.deepEqual(Object.fromEntries(d.families), {lite: 2, openccu: 2, ccu3: 1, pivccu3: 1, other: 1});
+        assert.deepEqual(d.litePlatforms.sort(), [
+            ['ova-x86_64', 1],
+            ['rpi4-aarch64', 1],
+        ]);
+        assert.deepEqual(d.ccuVersions, [['3.89.11', 7, 2]]);
+    });
+
+    it('stores NULL for a CCU3 or OpenCCU body and for a LITE that is not a version', async () => {
+        assert.equal((await lite(3)).lite, null);
+        assert.equal((await lite(4)).lite, null);
+        for (const [n, value] of [
+            [8, 'dev'],
+            [9, '<b>1.0.0</b>'],
+            [10, 1],
+            [11, '1.0.0-' + 'x'.repeat(30)],
+        ]) {
+            assert.equal((await postTelemetry(server, n, body('lite-rpi3', value, 'rpi3-aarch64'))).status, 200);
+            assert.equal((await lite(n)).lite, null);
+        }
+    });
+
+    it('counts a lite product without a LITE version as lite', async () => {
+        const d = await (await server.fetch('/data?timespan=7')).json();
+        assert.equal(Object.fromEntries(d.families).lite, 6);
+        assert.deepEqual(
+            d.litePlatforms.find((p) => p[0] === 'rpi3-aarch64'),
+            ['rpi3-aarch64', 4],
+        );
+    });
+
+    it('updates the lite version on the next contact', async () => {
+        await postTelemetry(server, 1, body('lite-rpi4', '1.0.0'));
+        assert.equal((await lite(1)).lite, '1.0.0');
+    });
+
+    it('adds the lite column to a database that lacks it, once', async () => {
+        const {prepare} = require('../server.js');
+        await prepare(server.db.raw);
+        const columns = await server.db.all('PRAGMA table_info(installation);');
+        assert.equal(columns.filter((c) => c.name === 'lite').length, 1);
+    });
+
+    it('is in the export', async () => {
+        const text = await (await server.fetch('/export.csv')).text();
+        assert.ok(text.includes('\r\n7,lite,1.0.0,1\r\n'));
+        assert.ok(text.includes('\r\n7,family,lite,6\r\n'));
     });
 });

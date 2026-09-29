@@ -22,6 +22,8 @@ const versionPattern = /^[0-9A-Za-z][0-9A-Za-z.+_~-]{0,63}$/;
 const namePattern = /^[A-Za-z0-9_.+-]{1,40}$/;
 // npm package names; legacy names may have capitals
 const nodeNamePattern = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/i;
+// openccu-lite's own version (ccu.LITE, RedMatic 18 on): stored only when it is one, else NULL
+const litePattern = /^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$/;
 const maxNodes = 500;
 // Keys of the body that are not installed modules
 const notNodes = ['ccu', 'redmatic', 'node-red', 'nodejs', 'ain2', 'npm'];
@@ -157,14 +159,14 @@ function createApp({
                 if (known) {
                     log('update', i.cc);
                     await q.run(
-                        'UPDATE installation SET redmatic=?, ccu=?, platform=?, product=?, cc=?, country=?, updated=CURRENT_TIMESTAMP, counter=counter+1 WHERE uuid=?;',
-                        [i.redmatic, i.ccu, i.platform, i.product, i.cc, i.country, uuid],
+                        'UPDATE installation SET redmatic=?, ccu=?, platform=?, product=?, lite=?, cc=?, country=?, updated=CURRENT_TIMESTAMP, counter=counter+1 WHERE uuid=?;',
+                        [i.redmatic, i.ccu, i.platform, i.product, i.lite, i.cc, i.country, uuid],
                     );
                 } else {
                     log('insert', i.cc);
                     await q.run(
-                        'INSERT INTO installation (uuid, redmatic, initial, ccu, platform, product, created, counter, cc, country) VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP,0,?,?);',
-                        [uuid, i.redmatic, i.redmatic, i.ccu, i.platform, i.product, i.cc, i.country],
+                        'INSERT INTO installation (uuid, redmatic, initial, ccu, platform, product, lite, created, counter, cc, country) VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP,0,?,?);',
+                        [uuid, i.redmatic, i.redmatic, i.ccu, i.platform, i.product, i.lite, i.cc, i.country],
                     );
                 }
                 await q.run('DELETE FROM node WHERE installation_uuid=?', [uuid]);
@@ -221,6 +223,7 @@ function validate(data) {
             ccu: ccu.VERSION,
             platform: normalizePlatform(ccu.PLATFORM),
             product: ccu.PRODUCT,
+            lite: typeof ccu.LITE === 'string' && ccu.LITE.length <= 32 && litePattern.test(ccu.LITE) ? ccu.LITE : null,
         },
         nodes,
     };
@@ -287,6 +290,33 @@ function promisify(db) {
     };
 }
 
+// openccu-lite: a lite-<upstream product> PRODUCT or a LITE version (task 2)
+const liteCondition = "(product LIKE 'lite-%' OR lite IS NOT NULL)";
+
+// The firmware family, derived when queried, never stored: ccu3, openccu (RaspberryMatic/OpenCCU with or without the
+// raspmatic_ prefix), pivccu3, lite or other.
+const familyExpression =
+    'CASE WHEN ' +
+    liteCondition +
+    " THEN 'lite'" +
+    " WHEN product = 'ccu3' THEN 'ccu3'" +
+    " WHEN product = 'pivccu3' THEN 'pivccu3'" +
+    " WHEN product LIKE 'raspmatic%' OR product GLOB 'rpi[0-9]*' OR product IN ('ova', 'intelnuc')" +
+    " OR product GLOB 'tinkerboard*' OR product GLOB 'odroid-*' OR product GLOB 'oci_*' OR product GLOB 'lxc_*'" +
+    " OR product GLOB 'generic-*' THEN 'openccu'" +
+    " ELSE 'other' END";
+
+/**
+ * Brings a database up to what the code needs. Until task 4's migrations: the lite column (task 2).
+ */
+async function prepare(db) {
+    const q = promisify(db);
+    const columns = await q.all('PRAGMA table_info(installation);');
+    if (!columns.some((c) => c.name === 'lite')) {
+        await q.run('ALTER TABLE installation ADD COLUMN lite VARCHAR (32);');
+    }
+}
+
 /**
  * The aggregates of the page (and the export) for one timespan.
  */
@@ -313,7 +343,18 @@ async function aggregate(q, timespan) {
         )
     ).map((o) => [o.cc, o.country, o.count]);
     data.platforms = (await group('platform')).map((o) => [o.platform, o.count]);
-    data.ccuVersions = (await group('ccu')).map((o) => [o.ccu, o.count]).sort((a, b) => semverCompare(b[0], a[0]));
+    // [version, installations, of them openccu-lite]: a lite system reports its OpenCCU base version here
+    data.ccuVersions = (
+        await q.all(
+            'SELECT ccu, COUNT(uuid) AS count, SUM(' +
+                liteCondition +
+                ') AS lite FROM installation ' +
+                where +
+                ' GROUP BY ccu ORDER BY count DESC;',
+        )
+    )
+        .map((o) => [o.ccu, o.count, o.lite])
+        .sort((a, b) => semverCompare(b[0], a[0]));
     data.nodes = (
         await q.all(
             'SELECT node.name AS name, COUNT(node.installation_uuid) AS count FROM node LEFT JOIN installation ON installation.uuid = node.installation_uuid ' +
@@ -326,6 +367,33 @@ async function aggregate(q, timespan) {
     data.versions = (await group('redmatic'))
         .map((o) => [o.redmatic, o.count])
         .sort((a, b) => semverCompare(b[0], a[0]));
+    data.liteVersions = (
+        await q.all(
+            'SELECT lite, COUNT(uuid) AS count FROM installation ' +
+                where +
+                ' AND lite IS NOT NULL GROUP BY lite ORDER BY count DESC;',
+        )
+    )
+        .map((o) => [o.lite, o.count])
+        .sort((a, b) => semverCompare(b[0], a[0]));
+    data.families = (
+        await q.all(
+            'SELECT ' +
+                familyExpression +
+                ' AS family, COUNT(uuid) AS count FROM installation ' +
+                where +
+                ' GROUP BY family ORDER BY count DESC;',
+        )
+    ).map((o) => [o.family, o.count]);
+    data.litePlatforms = (
+        await q.all(
+            'SELECT platform, COUNT(uuid) AS count FROM installation ' +
+                where +
+                ' AND ' +
+                liteCondition +
+                ' GROUP BY platform ORDER BY count DESC;',
+        )
+    ).map((o) => [o.platform, o.count]);
     const format = timespan > 7 ? '%Y-%m-%d' : '%Y-%m-%d %H:00:00';
     const rows = await q.all(
         'SELECT strftime("' +
@@ -350,6 +418,9 @@ function exportCsv(data) {
         platforms: 'platform',
         products: 'product',
         nodes: 'node',
+        liteVersions: 'lite',
+        litePlatforms: 'lite-platform',
+        families: 'family',
     };
     const field = (value) => {
         const str = value === null || value === undefined ? '' : String(value);
@@ -426,12 +497,13 @@ function ts() {
     );
 }
 
-function main() {
+async function main() {
     const port = parseInt(process.env.PORT, 10) || 8080;
     const dbfile = process.env.DB || path.join(__dirname, 'redmatic.db');
     const db = new sqlite3.Database(dbfile);
     db.on('error', (err) => defaultLog(err.message));
     const ip2cc = new Ip2cc(path.join(__dirname, 'IP2LOCATION-LITE-DB1.CSV'));
+    await prepare(db);
 
     const trustProxy = process.env.TRUST_PROXY;
     // telemetry POSTs per client address and hour; 0 turns the limit off
@@ -460,11 +532,15 @@ function main() {
 }
 
 if (require.main === module) {
-    main();
+    main().catch((err) => {
+        defaultLog('start failed:', err.message);
+        process.exit(1);
+    });
 }
 
 module.exports = {
     createApp,
+    prepare,
     validate,
     rateLimiter,
     aggregate,

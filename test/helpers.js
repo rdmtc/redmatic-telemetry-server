@@ -10,7 +10,7 @@ const http = require('http');
 const sqlite3 = require('sqlite3');
 const Ip2cc = require('ip2countrycode');
 
-const {createApp} = require('../server.js');
+const {createApp, prepare} = require('../server.js');
 
 const root = path.join(__dirname, '..');
 
@@ -84,6 +84,9 @@ async function insertInstallation(db, n, fields = {}) {
             row.country,
         ],
     );
+    if (row.lite) {
+        await db.run('UPDATE installation SET lite=? WHERE uuid=?;', [row.lite, uuid(n)]);
+    }
     for (const [name, version] of Object.entries(row.nodes)) {
         await db.run('INSERT INTO node (name, version, installation_uuid) VALUES (?,?,?);', [name, version, uuid(n)]);
     }
@@ -91,6 +94,7 @@ async function insertInstallation(db, n, fields = {}) {
 
 async function startServer(options = {}) {
     const db = options.db || (await makeDb());
+    await prepare(db.raw);
     const logs = [];
     const ip2cc = new Ip2cc(path.join(__dirname, 'fixtures', 'ip2location.csv'));
     const app = createApp({

@@ -20,6 +20,18 @@ $(document).ready(() => {
             $('#ccu-versions-table').html('');
             $('#ccu-platforms-table').html('');
             $('#countries').html('');
+            $('#families-table').html('');
+            $('#lite-versions-table').html('');
+
+            const familyNames = {
+                ccu3: 'CCU3',
+                openccu: 'OpenCCU / RaspberryMatic',
+                pivccu3: 'piVCCU3',
+                lite: 'openccu-lite',
+                other: 'other',
+            };
+            const families = (data.families || []).map(([id, count]) => [familyNames[id] || id, count]);
+            const liteVersions = data.liteVersions || [];
 
             let timeformat;
             let minTickSize;
@@ -81,11 +93,25 @@ $(document).ready(() => {
             });
 
             data.ccuVersions.forEach((v) => {
-                const [name, count] = v;
+                const [name, count, lite] = v;
                 let percent = Math.round((100 * count) / data.total);
+                // a lite system reports its OpenCCU base version: mark how many of them are openccu-lite
+                const liteNote = lite ? ` <span class="lite">(${esc(lite)} openccu-lite)</span>` : '';
                 $('#ccu-versions-table').append(
-                    `<tr><td>${esc(name)}</td><td class="count">${esc(count)}</td><td class="count">(${percent}%)</td></tr>`,
+                    `<tr><td>${esc(name)}${liteNote}</td><td class="count">${esc(count)}</td><td class="count">(${percent}%)</td></tr>`,
                 );
+            });
+
+            [
+                ['#families-table', families],
+                ['#lite-versions-table', liteVersions],
+            ].forEach(([table, rows]) => {
+                rows.forEach(([name, count]) => {
+                    let percent = Math.round((100 * count) / data.total);
+                    $(table).append(
+                        `<tr><td>${esc(name)}</td><td class="count">${esc(count)}</td><td class="count">(${percent}%)</td></tr>`,
+                    );
+                });
             });
 
             data.platforms.forEach((v) => {
@@ -157,6 +183,22 @@ $(document).ready(() => {
             $.plot(
                 '#ccu-products',
                 data.products.map((a) => {
+                    return {label: esc(a[0]), data: a[1]};
+                }),
+                pieConfig,
+            );
+
+            $.plot(
+                '#families',
+                families.map((a) => {
+                    return {label: esc(a[0]), data: a[1]};
+                }),
+                pieConfig,
+            );
+
+            $.plot(
+                '#lite-versions',
+                liteVersions.map((a) => {
                     return {label: esc(a[0]), data: a[1]};
                 }),
                 pieConfig,
