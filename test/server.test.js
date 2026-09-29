@@ -209,17 +209,22 @@ describe('GET /total.svg', () => {
     let server;
     before(async () => {
         server = await startServer();
+        // 3 not seen for more than a year, 2 created within it, 2 created before and seen within it
         for (let i = 1; i <= 3; i++) {
             await insertInstallation(server.db, i, {created: '-' + i * 400 + ' day'});
         }
+        await insertInstallation(server.db, 4, {created: '-10 day'});
+        await insertInstallation(server.db, 5, {created: '-364 day'});
+        await insertInstallation(server.db, 6, {created: '-900 day', updated: '-3 day'});
+        await insertInstallation(server.db, 7, {created: '-900 day', updated: '-300 day'});
     });
     after(() => server.close());
 
-    it('answers the badge with every row ever', async () => {
+    it('counts the installations active in the last 365 days (task 9)', async () => {
         const res = await server.fetch('/total.svg');
         assert.equal(res.status, 200);
         assert.match(res.headers.get('content-type'), /^image\/svg\+xml/);
-        assert.match(await res.text(), /textLength="210">3<\/text>/);
+        assert.match(await res.text(), /textLength="210">4<\/text>/);
     });
 
     it('formats the number', () => {
@@ -445,6 +450,10 @@ describe('validation of the telemetry body (task 6)', () => {
             'node-red-contrib-y ': '1.0.0',
             'node-red-contrib-z': {nested: true},
             'node-red-contrib-long': '1'.repeat(65),
+            // not public: not stored (task 9)
+            'my-private-module': '1.0.0',
+            '@scope/private': '1.0.0',
+            'contrib-node-red-x': '1.0.0',
         });
         assert.equal((await postTelemetry(server, 5, body)).status, 200);
         const rows = await server.db.all('SELECT name FROM node WHERE installation_uuid=? ORDER BY name;', [uuid(5)]);

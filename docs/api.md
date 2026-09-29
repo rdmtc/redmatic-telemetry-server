@@ -30,16 +30,16 @@ Body (the output of RedMatic's `bin/redmaticVersions`):
 }
 ```
 
-| Field                               | Stored as              | Rule                                                                                                                                                           |
-| ----------------------------------- | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `redmatic`                          | `redmatic` (`initial`) | required, version-like: `^[0-9A-Za-z][0-9A-Za-z.+_~-]{0,63}$`                                                                                                  |
-| `ccu.VERSION`                       | `ccu`                  | may be missing or empty, else version-like                                                                                                                     |
-| `ccu.PRODUCT`                       | `product`              | may be missing or empty, else `^[A-Za-z0-9_.+-]{1,40}$`                                                                                                        |
-| `ccu.PLATFORM`                      | `platform`             | as `PRODUCT`; the bare 2019 names `rpi0`, `rpi3`, `rpi4`, `tinkerboard`, `ova` get an architecture                                                             |
-| `ccu.LITE`                          | `lite`                 | openccu-lite's version (RedMatic 18 on): `^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$`, ≤ 32, else NULL                                                                   |
-| `ccu.deviceTypes`                   | —                      | dropped                                                                                                                                                        |
-| `nodejs`, `node-red`, `npm`, `ain2` | —                      | dropped                                                                                                                                                        |
-| every other key                     | a `node` row           | an installed npm module and its version; at most 500. A key that is not an npm package name, or a version that is not a string of ≤ 64 characters, is left out |
+| Field                               | Stored as              | Rule                                                                                                                                                                                                                                                           |
+| ----------------------------------- | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `redmatic`                          | `redmatic` (`initial`) | required, version-like: `^[0-9A-Za-z][0-9A-Za-z.+_~-]{0,63}$`                                                                                                                                                                                                  |
+| `ccu.VERSION`                       | `ccu`                  | may be missing or empty, else version-like                                                                                                                                                                                                                     |
+| `ccu.PRODUCT`                       | `product`              | may be missing or empty, else `^[A-Za-z0-9_.+-]{1,40}$`                                                                                                                                                                                                        |
+| `ccu.PLATFORM`                      | `platform`             | as `PRODUCT`; the bare 2019 names `rpi0`, `rpi3`, `rpi4`, `tinkerboard`, `ova` get an architecture                                                                                                                                                             |
+| `ccu.LITE`                          | `lite`                 | openccu-lite's version (RedMatic 18 on): `^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$`, ≤ 32, else NULL                                                                                                                                                                   |
+| `ccu.deviceTypes`                   | —                      | dropped                                                                                                                                                                                                                                                        |
+| `nodejs`, `node-red`, `npm`, `ain2` | —                      | dropped                                                                                                                                                                                                                                                        |
+| every other key                     | a `node` row           | an installed npm module and its version; at most 500. Only public modules are stored: `redmatic-*`, `node-red-*`, `@scope/node-red-*`. Any other key, a key that is not an npm package name, or a version that is not a string of ≤ 64 characters, is left out |
 
 The country comes from the client address (`req.ip`, see `TRUST_PROXY`); the address itself is not stored.
 
@@ -47,10 +47,23 @@ Answers: `200` stored (a new installation or an update of a known one); `400` a 
 that breaks a rule (nothing is stored); `413` a body over 64 kB; `429` more than `RATE_LIMIT` POSTs from the address
 in the hour; `500` a database error. The client ignores the answer.
 
+## `DELETE /`
+
+Deletes one installation and its modules, on its own request: RedMatic calls it when the user turns the telemetry off
+(in the RedMatic release that adds it). Anyone with the id can call it by hand, e.g.
+`curl -X DELETE -H "X-RedMatic-uuid: $(cat /etc/config/rdmtc.uuid)" https://telemetry.redmatic.de/`.
+
+Headers: `X-RedMatic-uuid: <id>` as for `POST /` (any case). No body.
+
+Answers: `204` done, the same whether the id was known or not (the answer does not tell whether an id exists);
+`400` a missing or malformed id; `429` more than `RATE_LIMIT` requests from the address in the hour (shared with
+`POST /`); `500` a database error. The daily counts (`/data/trend`) keep the installation, as a count without its id.
+
 ## `GET /data?timespan=<days>`
 
 The aggregates the page shows, over the installations first **or** last seen in the timespan. `timespan` is one of
-`1`, `7`, `30`, `90`, `365`, `36500` (all; also when it is missing); anything else answers `400`. Cached for five
+`1`, `7`, `30`, `90`, `365`, `36500` (all that is stored, i.e. the last 24 months, see
+[data.md](data.md#how-long); also when it is missing); anything else answers `400`. Cached for five
 minutes (`Cache-Control: max-age=300`).
 
 ```json
@@ -80,7 +93,7 @@ minutes (`Cache-Control: max-age=300`).
 
 - Each list is `[value, count]`, sorted by count, versions newest first. `ccuVersions` has a third number: how many
   of them are openccu-lite (a lite system reports its OpenCCU base version).
-- `nodes`: only `redmatic-*` and `node-red-*` modules.
+- `nodes`: `redmatic-*`, `node-red-*` and `@scope/node-red-*` modules (the only ones stored).
 - `families`: `ccu3`, `openccu` (RaspberryMatic/OpenCCU), `pivccu3`, `lite` (openccu-lite), `other`; derived from the
   product and the lite version when queried.
 - `byday`: new installations per day (per hour for 7 days and less), `[epoch ms, count]`.
@@ -128,7 +141,8 @@ The anonymised export: the `/data` aggregates for every timespan, with no ids an
 
 ## `GET /total.svg`
 
-The `installs` badge in RedMatic's README: the number of installations ever recorded (`999`, `1.0k`, `12k`).
+The `installs` badge in RedMatic's README: the number of installations active in the last 365 days (first or last
+seen; `999`, `1.0k`, `12k`).
 Cached for an hour.
 
 ## `GET /healthz`

@@ -8,7 +8,8 @@ const Ip2cc = require('ip2countrycode');
 
 const pkg = require('./package.json');
 const {database, migrate, open} = require('./lib/db.js');
-const {aggregate, exportCsv} = require('./lib/stats.js');
+const {aggregate, exportCsv, publicNodePattern} = require('./lib/stats.js');
+const {applyRetention, deleteInstallation} = require('./lib/retention.js');
 const trends = require('./lib/trends.js');
 const {config} = require('./lib/config.js');
 
@@ -82,7 +83,10 @@ function createApp({
     });
 
     app.get('/total.svg', (req, res) => {
-        const row = q.get('SELECT COUNT(redmatic) AS total FROM installation;');
+        // the installations active in the last 365 days (task 9): with the retention, "ever" would shrink
+        const row = q.get(
+            "SELECT COUNT(*) AS total FROM installation WHERE created > DATETIME('now', '-365 day') OR updated > DATETIME('now', '-365 day');",
+        );
         res.set('Cache-Control', 'max-age=3600');
         res.set('Content-Type', 'image/svg+xml;charset=utf-8');
         res.status(200).send(badge(formatInstalls(row.total)));
@@ -155,6 +159,28 @@ function createApp({
             }
             store(uuid.toLowerCase(), body, clientAddress(req));
             res.send('');
+        },
+    );
+
+    // Deletion on request (task 9): RedMatic calls it when the user turns the telemetry off. The id is the only
+    // credential; the answer is the same whether it was known or not.
+    app.delete(
+        '/',
+        (req, res, next) => {
+            if (allowed(clientAddress(req))) {
+                return next();
+            }
+            log('rate limited');
+            res.status(429).send('');
+        },
+        (req, res) => {
+            const uuid = String(req.get('x-redmatic-uuid') || '');
+            if (!uuidPattern.test(uuid)) {
+                log('invalid request');
+                return res.status(400).send('');
+            }
+            log(deleteInstallation(q, uuid.toLowerCase()) ? 'delete' : 'delete unknown');
+            res.status(204).send();
         },
     );
 
@@ -233,7 +259,13 @@ function validate(data) {
     const nodes = {};
     for (const name of names) {
         const version = data[name];
-        if (name.length <= 214 && nodeNamePattern.test(name) && typeof version === 'string' && version.length <= 64) {
+        if (
+            name.length <= 214 &&
+            nodeNamePattern.test(name) &&
+            publicNodePattern.test(name) &&
+            typeof version === 'string' &&
+            version.length <= 64
+        ) {
             nodes[name] = version;
         }
     }
@@ -309,16 +341,21 @@ function badge(installs) {
 }
 
 /**
- * Runs the daily job (task 11's snapshot) now and then every hour; each run writes what the day still lacks.
- * Returns a function that stops it.
+ * Runs the daily job now and then every hour: task 11's snapshot first, so the counts of what the retention (task 9)
+ * deletes are kept; each run writes what the day still lacks. Logs counts only. Returns a function that stops it.
  */
 function startDaily(db, {log = defaultLog, now = Date.now, intervalMs = 3600 * 1000} = {}) {
     const q = database(db);
     const run = () => {
         try {
-            const done = trends.daily(q, new Date(now()));
+            const at = new Date(now());
+            const done = trends.daily(q, at);
             if (done.new || done.backfilled || done.snapshot) {
                 log('daily', JSON.stringify(done));
+            }
+            const deleted = applyRetention(q, at);
+            if (deleted.installations || deleted.nodes) {
+                log('retention', JSON.stringify(deleted));
             }
         } catch (err) {
             log('daily job failed:', err.message);

@@ -21,3 +21,8 @@
   version, CCU version, family, openccu-lite version, platform and country, and new installations per day;
   `/data/trend`, and the page's "Active installations over time" chart. The first start backfills a rough active
   curve from the first and last contacts.
+- **Privacy:** installations not seen for 24 months are deleted, once a day (their counts stay in the daily
+  snapshots). Only public modules (`redmatic-*`, `node-red-*`, `@scope/node-red-*`) are stored; the others are deleted
+  once (migration 5). `DELETE /` with the `X-RedMatic-uuid` header deletes an installation on its request.
+- `/total.svg` counts the installations active in the last 365 days instead of every row ever; `/data` counts
+  `@scope/node-red-*` modules too.
