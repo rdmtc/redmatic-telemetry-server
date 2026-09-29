@@ -9,6 +9,7 @@ const Ip2cc = require('ip2countrycode');
 const pkg = require('./package.json');
 const {database, migrate, open} = require('./lib/db.js');
 const {aggregate, exportCsv} = require('./lib/stats.js');
+const {config} = require('./lib/config.js');
 
 // The timespans (days) the page offers, and the export covers; 36500 is "all".
 const timespans = [1, 7, 30, 90, 365, 36500];
@@ -69,6 +70,13 @@ function createApp({
     app.set('trust proxy', trustProxy);
 
     app.use(express.static(path.join(__dirname, 'www')));
+
+    // For the container's HEALTHCHECK: the database answers.
+    app.get('/healthz', (req, res) => {
+        q.get('SELECT 1 AS ok;');
+        res.set('Cache-Control', 'no-store');
+        res.json({db: 'ok', version: pkg.version});
+    });
 
     app.get('/total.svg', (req, res) => {
         const row = q.get('SELECT COUNT(redmatic) AS total FROM installation;');
@@ -297,21 +305,23 @@ function ts() {
     );
 }
 
-function main() {
-    const port = parseInt(process.env.PORT, 10) || 8080;
-    const dbfile = process.env.DB || path.join(__dirname, 'redmatic.db');
-    const db = open(dbfile);
-    const ip2cc = new Ip2cc(path.join(__dirname, 'IP2LOCATION-LITE-DB1.CSV'));
+/**
+ * The country lookup from the IP2Location CSV. Without the file the server still runs and stores no country.
+ */
+function countryLookup(file) {
+    try {
+        return new Ip2cc(file);
+    } catch (err) {
+        defaultLog('no country lookup:', err.message);
+        return {lookup: () => null};
+    }
+}
 
-    const trustProxy = process.env.TRUST_PROXY;
-    // telemetry POSTs per client address and hour; 0 turns the limit off
-    const rateLimit = process.env.RATE_LIMIT === undefined ? 10 : parseInt(process.env.RATE_LIMIT, 10) || 0;
-    const app = createApp({
-        db,
-        ip2cc,
-        rateLimit: rateLimit > 0 ? {limit: rateLimit, windowMs: 3600 * 1000} : false,
-        ...(trustProxy ? {trustProxy: /^\d+$/.test(trustProxy) ? parseInt(trustProxy, 10) : trustProxy} : {}),
-    });
+function main() {
+    const {port, dbPath, ip2locationCsv, trustProxy, rateLimit} = config();
+    const db = open(dbPath);
+    const ip2cc = countryLookup(ip2locationCsv);
+    const app = createApp({db, ip2cc, trustProxy, rateLimit});
     http.createServer(app).listen(port, () => {
         defaultLog(pkg.name, 'listening on port', port);
     });

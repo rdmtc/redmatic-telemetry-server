@@ -1,0 +1,18 @@
+# An example: copy it, fill in your paths, and put a reverse proxy (TLS) in front. The app listens on the loopback
+# of the host only; the proxy passes X-Forwarded-For.
+services:
+  telemetry:
+    image: hobbyquaker/redmatic-telemetry-server:latest
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:8080:8080'
+    environment:
+      # TRUST_PROXY: '1'   # when the proxy is not on the loopback or a private network
+      # RATE_LIMIT: '10'   # telemetry POSTs per client address and hour, 0 = off
+      DB_PATH: /data/redmatic.db
+      IP2LOCATION_CSV: /geo/IP2LOCATION-LITE-DB1.CSV
+    volumes:
+      # the database; owned by the uid the image was built with (UID, default 996)
+      - /srv/redmatic-telemetry/data:/data
+      # the country database, read-only
+      - /srv/redmatic-telemetry/geo:/geo:ro

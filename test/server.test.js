@@ -13,6 +13,12 @@ describe('static page', () => {
     });
     after(() => server.close());
 
+    it('answers /healthz while the database does', async () => {
+        const res = await server.fetch('/healthz');
+        assert.equal(res.status, 200);
+        assert.deepEqual(await res.json(), {db: 'ok', version: require('../package.json').version});
+    });
+
     it('serves the page', async () => {
         const res = await server.fetch('/');
         assert.equal(res.status, 200);
@@ -380,6 +386,7 @@ describe('a closed database (B-4)', () => {
         assert.equal((await server.fetch('/total.svg')).status, 500);
         assert.equal((await server.fetch('/data?timespan=7')).status, 500);
         assert.equal((await server.fetch('/export.json')).status, 500);
+        assert.equal((await server.fetch('/healthz')).status, 500);
         assert.equal((await postTelemetry(server, 1, telemetryBody())).status, 500);
         assert.equal((await server.fetch('/')).status, 200);
     });

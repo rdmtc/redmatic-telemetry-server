@@ -1,10 +1,11 @@
-#!/bin/bash
+#!/bin/sh
+# Builds the image and pushes it as :latest and :<package version>. Run by hand; needs `docker login`.
+set -eu
 
-IMAGE_ID=$(docker build . | awk '/Successfully built/{print $NF}')
+IMAGE=${IMAGE:-hobbyquaker/redmatic-telemetry-server}
+VERSION=$(node -p "require('./package.json').version")
 
-echo "IMAGE_ID=$IMAGE_ID"
-
-docker tag $IMAGE_ID hobbyquaker/redmatic-telemetry-server:latest
-
-docker push hobbyquaker/redmatic-telemetry-server:latest
-
+docker buildx build --push \
+    --tag "$IMAGE:latest" \
+    --tag "$IMAGE:$VERSION" \
+    "$@" .

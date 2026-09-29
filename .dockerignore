@@ -1,6 +1,9 @@
+.git
+.github
 node_modules
 npm-debug.log
-redmatic.db
+test
+*.db
+*.db-wal
+*.db-shm
 .idea
-server.key
-server.cert
