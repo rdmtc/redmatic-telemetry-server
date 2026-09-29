@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 2.0.0 / 2026-09-29
+
+- The image is published to `ghcr.io/rdmtc/redmatic-telemetry-server` (amd64, arm64) by a GitHub workflow.
 
 - **Security:** the raw database download (`/database`) is gone; an anonymised export (`/export.json`,
   `/export.csv`) of the page's aggregates replaces it.
