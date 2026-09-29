@@ -554,16 +554,39 @@ describe('openccu-lite (task 2)', () => {
         assert.equal((await lite(1)).lite, '1.0.0');
     });
 
-    it('adds the lite column to a database that lacks it, once', async () => {
-        const {prepare} = require('../server.js');
-        prepare(server.db.raw);
-        const columns = await server.db.all('PRAGMA table_info(installation);');
-        assert.equal(columns.filter((c) => c.name === 'lite').length, 1);
-    });
-
     it('is in the export', async () => {
         const text = await (await server.fetch('/export.csv')).text();
         assert.ok(text.includes('\r\n7,lite,1.0.0,1\r\n'));
         assert.ok(text.includes('\r\n7,family,lite,6\r\n'));
+    });
+});
+
+describe('GET /data: timespans and the cache (task 4)', () => {
+    let server;
+    let time = 1e12;
+    before(async () => {
+        server = await startServer({app: {cacheSeconds: 300, now: () => time}});
+        await insertInstallation(server.db, 1);
+    });
+    after(() => server.close());
+
+    it('answers 400 to a timespan the page does not offer', async () => {
+        for (const t of ['5', 'abc', '36501', '-1', '7;DROP TABLE node']) {
+            assert.equal((await server.fetch('/data?timespan=' + encodeURIComponent(t))).status, 400, t);
+        }
+        for (const t of ['1', '7', '30', '90', '365', '36500']) {
+            assert.equal((await server.fetch('/data?timespan=' + t)).status, 200, t);
+        }
+    });
+
+    it('serves the aggregates from the cache for five minutes', async () => {
+        const first = await server.fetch('/data?timespan=30');
+        assert.equal(first.headers.get('cache-control'), 'max-age=300');
+        assert.equal((await first.json()).total, 1);
+        await insertInstallation(server.db, 2);
+        time += 299 * 1000;
+        assert.equal((await (await server.fetch('/data?timespan=30')).json()).total, 1);
+        time += 2 * 1000;
+        assert.equal((await (await server.fetch('/data?timespan=30')).json()).total, 2);
     });
 });

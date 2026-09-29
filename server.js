@@ -3,16 +3,17 @@
 const path = require('path');
 const http = require('http');
 
-const {DatabaseSync} = require('node:sqlite');
 const express = require('express');
-const semverCompare = require('semantic-compare');
 const Ip2cc = require('ip2countrycode');
 
 const pkg = require('./package.json');
+const {database, migrate, open} = require('./lib/db.js');
+const {aggregate, exportCsv} = require('./lib/stats.js');
 
-// The timespans (days) the export covers; 36500 is "all".
-const exportTimespans = [1, 7, 30, 90, 365, 36500];
-const exportMaxAge = 3600;
+// The timespans (days) the page offers, and the export covers; 36500 is "all".
+const timespans = [1, 7, 30, 90, 365, 36500];
+// /data and the export are cached this long (seconds): telemetry arrives only when an addon starts
+const defaultCacheSeconds = 300;
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -30,11 +31,13 @@ const notNodes = ['ccu', 'redmatic', 'node-red', 'nodejs', 'ain2', 'npm'];
 /**
  * Creates the Express app.
  * @param {object} options
- * @param {DatabaseSync} options.db the telemetry database
+ * @param {object} options.db the telemetry database (node:sqlite DatabaseSync), migrated
  * @param {{lookup: function(string): {code: string, country: string}}} options.ip2cc the country lookup
  * @param {function(...*)} [options.log] logger
  * @param {boolean|number|string} [options.trustProxy] Express' "trust proxy": which peers may set X-Forwarded-For
  * @param {{limit: number, windowMs: number}|false} [options.rateLimit] telemetry POSTs per client address and window
+ * @param {number} [options.cacheSeconds] how long /data and the export are cached
+ * @param {function(): number} [options.now] clock, for the cache
  * @returns {object} the Express app
  */
 function createApp({
@@ -43,11 +46,24 @@ function createApp({
     log = defaultLog,
     trustProxy = 'loopback, linklocal, uniquelocal',
     rateLimit = {limit: 10, windowMs: 3600 * 1000},
+    cacheSeconds = defaultCacheSeconds,
+    now = Date.now,
 }) {
     const app = express();
     const allowed = rateLimit ? rateLimiter(rateLimit) : () => true;
     const q = database(db);
-    let exportCache = null;
+    const cache = new Map();
+
+    // The aggregates of one timespan, from the cache while it is fresh.
+    const stats = (timespan) => {
+        const hit = cache.get(timespan);
+        if (hit && now() - hit.time < cacheSeconds * 1000) {
+            return hit.data;
+        }
+        const data = aggregate(q, timespan);
+        cache.set(timespan, {time: now(), data});
+        return data;
+    };
 
     // Only the reverse proxy's X-Forwarded-For counts: req.ip is the client address it saw (B-4).
     app.set('trust proxy', trustProxy);
@@ -62,39 +78,32 @@ function createApp({
     });
 
     app.get('/data', (req, res) => {
-        log('get /data');
-        const timespan = parseInt(req.query.timespan, 10) || 36500;
-        res.json(aggregate(q, timespan));
+        const timespan = req.query.timespan === undefined ? 36500 : Number(req.query.timespan);
+        if (!timespans.includes(timespan)) {
+            return res.status(400).send('');
+        }
+        res.set('Cache-Control', 'max-age=' + cacheSeconds);
+        res.json(stats(timespan));
     });
 
     // The raw database is not served (B-1): it holds every installation's telemetry id. What can be downloaded is
     // this anonymised export, the same aggregates the page shows, for every timespan the page offers.
     app.get(['/export.json', '/export.csv'], (req, res) => {
-        log('get', req.path);
-        if (!exportCache || Date.now() - exportCache.time >= exportMaxAge * 1000) {
-            const timespans = {};
-            for (const timespan of exportTimespans) {
-                timespans[timespan === 36500 ? 'all' : String(timespan)] = aggregate(q, timespan);
-            }
-            exportCache = {
-                time: Date.now(),
-                data: {
-                    generated: new Date().toISOString(),
-                    description:
-                        'Anonymised aggregates of the RedMatic telemetry: counts of installations first or last ' +
-                        'seen in the timespan, per value. No telemetry ids, no per-installation rows.',
-                    timespans,
-                },
-            };
-        }
-        res.set('Cache-Control', 'max-age=' + exportMaxAge);
+        const data = {
+            generated: new Date(now()).toISOString(),
+            description:
+                'Anonymised aggregates of the RedMatic telemetry: counts of installations first or last ' +
+                'seen in the timespan, per value. No telemetry ids, no per-installation rows.',
+            timespans: Object.fromEntries(timespans.map((t) => [t === 36500 ? 'all' : String(t), stats(t)])),
+        };
+        res.set('Cache-Control', 'max-age=' + cacheSeconds);
         if (req.path === '/export.csv') {
             res.set('Content-Type', 'text/csv;charset=utf-8');
             res.set('Content-Disposition', 'attachment; filename="redmatic-telemetry-export.csv"');
-            res.send(exportCsv(exportCache.data));
+            res.send(exportCsv(data));
         } else {
             res.set('Content-Disposition', 'attachment; filename="redmatic-telemetry-export.json"');
-            res.json(exportCache.data);
+            res.json(data);
         }
     });
 
@@ -237,206 +246,6 @@ function rateLimiter({limit, windowMs, now = Date.now}) {
 }
 
 /**
- * A thin layer over node:sqlite: cached statements, plain row objects, undefined bound as NULL, and transactions
- * that roll back on an error. Synchronous: a transaction never interleaves with another request.
- */
-function database(db) {
-    const statements = new Map();
-    const statement = (sql) => {
-        let stmt = statements.get(sql);
-        if (!stmt) {
-            stmt = db.prepare(sql);
-            statements.set(sql, stmt);
-        }
-        return stmt;
-    };
-    const bind = (params) => params.map((v) => (v === undefined ? null : v));
-    return {
-        get: (sql, params = []) => {
-            const row = statement(sql).get(...bind(params));
-            return row && {...row};
-        },
-        all: (sql, params = []) =>
-            statement(sql)
-                .all(...bind(params))
-                .map((row) => ({...row})),
-        run: (sql, params = []) => statement(sql).run(...bind(params)),
-        exec: (sql) => db.exec(sql),
-        transaction(fn) {
-            db.exec('BEGIN;');
-            try {
-                const result = fn();
-                db.exec('COMMIT;');
-                return result;
-            } catch (err) {
-                try {
-                    db.exec('ROLLBACK;');
-                } catch {
-                    // the error that rolled it back is the one to report
-                }
-                throw err;
-            }
-        },
-    };
-}
-
-// openccu-lite: a lite-<upstream product> PRODUCT or a LITE version (task 2)
-const liteCondition = "(product LIKE 'lite-%' OR lite IS NOT NULL)";
-
-// The firmware family, derived when queried, never stored: ccu3, openccu (RaspberryMatic/OpenCCU with or without the
-// raspmatic_ prefix), pivccu3, lite or other.
-const familyExpression =
-    'CASE WHEN ' +
-    liteCondition +
-    " THEN 'lite'" +
-    " WHEN product = 'ccu3' THEN 'ccu3'" +
-    " WHEN product = 'pivccu3' THEN 'pivccu3'" +
-    " WHEN product LIKE 'raspmatic%' OR product GLOB 'rpi[0-9]*' OR product IN ('ova', 'intelnuc')" +
-    " OR product GLOB 'tinkerboard*' OR product GLOB 'odroid-*' OR product GLOB 'oci_*' OR product GLOB 'lxc_*'" +
-    " OR product GLOB 'generic-*' THEN 'openccu'" +
-    " ELSE 'other' END";
-
-/**
- * Brings a database up to what the code needs. Until task 4's migrations: the lite column (task 2).
- */
-function prepare(db) {
-    const q = database(db);
-    const columns = q.all('PRAGMA table_info(installation);');
-    if (!columns.some((c) => c.name === 'lite')) {
-        q.run('ALTER TABLE installation ADD COLUMN lite VARCHAR (32);');
-    }
-}
-
-/**
- * The aggregates of the page (and the export) for one timespan.
- */
-function aggregate(q, timespan) {
-    const data = {};
-    const since = ['-' + timespan + ' day'];
-    const where = "WHERE (created > DATETIME('now', ?) OR updated > DATETIME('now', ?))";
-    const both = [...since, ...since];
-    const group = (column) =>
-        q.all(
-            'SELECT ' +
-                column +
-                ', COUNT(uuid) AS count FROM installation ' +
-                where +
-                ' GROUP BY ' +
-                column +
-                ' ORDER BY count DESC;',
-            both,
-        );
-
-    Object.assign(data, q.get('SELECT COUNT(redmatic) AS total FROM installation ' + where + ';', both));
-    data.products = group('product').map((o) => [o.product, o.count]);
-    data.countries = q
-        .all(
-            'SELECT cc, country, COUNT(uuid) AS count FROM installation ' + where + ' GROUP BY cc ORDER BY count DESC;',
-            both,
-        )
-        .map((o) => [o.cc, o.country, o.count]);
-    data.platforms = group('platform').map((o) => [o.platform, o.count]);
-    // [version, installations, of them openccu-lite]: a lite system reports its OpenCCU base version here
-    data.ccuVersions = q
-        .all(
-            'SELECT ccu, COUNT(uuid) AS count, SUM(' +
-                liteCondition +
-                ') AS lite FROM installation ' +
-                where +
-                ' GROUP BY ccu ORDER BY count DESC;',
-            both,
-        )
-        .map((o) => [o.ccu, o.count, o.lite])
-        .sort((a, b) => semverCompare(b[0], a[0]));
-    data.nodes = q
-        .all(
-            'SELECT node.name AS name, COUNT(node.installation_uuid) AS count FROM node LEFT JOIN installation ON installation.uuid = node.installation_uuid ' +
-                where +
-                ' GROUP BY name ORDER BY count DESC;',
-            both,
-        )
-        .filter((o) => o.name.startsWith('redmatic-') || o.name.startsWith('node-red-'))
-        .map((o) => [o.name, o.count]);
-    data.versions = group('redmatic')
-        .map((o) => [o.redmatic, o.count])
-        .sort((a, b) => semverCompare(b[0], a[0]));
-    data.liteVersions = q
-        .all(
-            'SELECT lite, COUNT(uuid) AS count FROM installation ' +
-                where +
-                ' AND lite IS NOT NULL GROUP BY lite ORDER BY count DESC;',
-            both,
-        )
-        .map((o) => [o.lite, o.count])
-        .sort((a, b) => semverCompare(b[0], a[0]));
-    data.families = q
-        .all(
-            'SELECT ' +
-                familyExpression +
-                ' AS family, COUNT(uuid) AS count FROM installation ' +
-                where +
-                ' GROUP BY family ORDER BY count DESC;',
-            both,
-        )
-        .map((o) => [o.family, o.count]);
-    data.litePlatforms = q
-        .all(
-            'SELECT platform, COUNT(uuid) AS count FROM installation ' +
-                where +
-                ' AND ' +
-                liteCondition +
-                ' GROUP BY platform ORDER BY count DESC;',
-            both,
-        )
-        .map((o) => [o.platform, o.count]);
-    const format = timespan > 7 ? '%Y-%m-%d' : '%Y-%m-%d %H:00:00';
-    const rows = q.all(
-        "SELECT strftime(?, created) AS date, strftime('%s', strftime(?, created)) AS ts, COUNT(created) AS count " +
-            "FROM installation WHERE created > DATETIME('now', ?) GROUP BY date ORDER BY date;",
-        [format, format, ...since],
-    );
-    data.byday = rows.map((o) => [parseInt(o.ts, 10) * 1000, o.count]);
-    return data;
-}
-
-/**
- * The export as CSV: one line per timespan, dimension and value.
- */
-function exportCsv(data) {
-    const dimensions = {
-        versions: 'redmatic',
-        ccuVersions: 'ccu',
-        platforms: 'platform',
-        products: 'product',
-        nodes: 'node',
-        liteVersions: 'lite',
-        litePlatforms: 'lite-platform',
-        families: 'family',
-    };
-    const field = (value) => {
-        const str = value === null || value === undefined ? '' : String(value);
-        return /[",\r\n]/.test(str) ? '"' + str.replace(/"/g, '""') + '"' : str;
-    };
-    const lines = ['timespan,dimension,value,count'];
-    Object.keys(data.timespans).forEach((timespan) => {
-        const t = data.timespans[timespan];
-        lines.push([timespan, 'total', '', t.total].map(field).join(','));
-        Object.keys(dimensions).forEach((key) => {
-            (t[key] || []).forEach(([value, count]) => {
-                lines.push([timespan, dimensions[key], value, count].map(field).join(','));
-            });
-        });
-        (t.countries || []).forEach(([cc, , count]) => {
-            lines.push([timespan, 'country', cc, count].map(field).join(','));
-        });
-        (t.byday || []).forEach(([time, count]) => {
-            lines.push([timespan, 'new', new Date(time).toISOString(), count].map(field).join(','));
-        });
-    });
-    return lines.join('\r\n') + '\r\n';
-}
-
-/**
  * The five bare platform names of 2019 get the architecture RedMatic sends since.
  */
 function normalizePlatform(platform) {
@@ -491,9 +300,8 @@ function ts() {
 function main() {
     const port = parseInt(process.env.PORT, 10) || 8080;
     const dbfile = process.env.DB || path.join(__dirname, 'redmatic.db');
-    const db = new DatabaseSync(dbfile);
+    const db = open(dbfile);
     const ip2cc = new Ip2cc(path.join(__dirname, 'IP2LOCATION-LITE-DB1.CSV'));
-    prepare(db);
 
     const trustProxy = process.env.TRUST_PROXY;
     // telemetry POSTs per client address and hour; 0 turns the limit off
@@ -525,7 +333,7 @@ if (require.main === module) {
 
 module.exports = {
     createApp,
-    prepare,
+    migrate,
     validate,
     rateLimiter,
     aggregate,

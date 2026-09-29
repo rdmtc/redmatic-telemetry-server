@@ -10,11 +10,9 @@ const http = require('http');
 const {DatabaseSync} = require('node:sqlite');
 const Ip2cc = require('ip2countrycode');
 
-const {createApp, prepare} = require('../server.js');
+const {createApp, migrate} = require('../server.js');
 
-const root = path.join(__dirname, '..');
-
-// The live database has cc and country in addition to the 2019 schema file (task 4 adds them there).
+// The live database before the migrations: the 2019 schema file plus cc and country, added by hand.
 const liveColumns = [
     'ALTER TABLE installation ADD COLUMN cc VARCHAR (2);',
     'ALTER TABLE installation ADD COLUMN country VARCHAR (255);',
@@ -45,14 +43,18 @@ function wrap(db) {
     };
 }
 
-async function makeDb() {
+/** A temporary database: empty, or with {legacy: true} in the live shape from before the migrations. */
+async function makeDb({legacy = false} = {}) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rts-test-'));
     const file = path.join(dir, 'test.db');
     const db = wrap(new DatabaseSync(file));
-    await db.exec(fs.readFileSync(path.join(root, 'redmatic-telemetry.sql')).toString());
-    for (const sql of liveColumns) {
-        await db.exec(sql);
+    if (legacy) {
+        await db.exec(fs.readFileSync(path.join(__dirname, 'fixtures', 'schema-2019.sql')).toString());
+        for (const sql of liveColumns) {
+            await db.exec(sql);
+        }
     }
+    db.file = file;
     db.dir = dir;
     return db;
 }
@@ -105,7 +107,7 @@ async function insertInstallation(db, n, fields = {}) {
 
 async function startServer(options = {}) {
     const db = options.db || (await makeDb());
-    prepare(db.raw);
+    migrate(db.raw);
     const logs = [];
     const ip2cc = new Ip2cc(path.join(__dirname, 'fixtures', 'ip2location.csv'));
     const app = createApp({
@@ -113,6 +115,7 @@ async function startServer(options = {}) {
         ip2cc,
         log: (...args) => logs.push(args.join(' ')),
         rateLimit: false,
+        cacheSeconds: 0,
         ...options.app,
     });
     const server = http.createServer(app);
