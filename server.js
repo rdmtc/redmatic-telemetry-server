@@ -76,15 +76,86 @@ app.get('/total.svg', (req, res) => {
     });
 });
 
-app.get('/database', (req, res) => {
-    log('get /database');
-    res.download(dbfile);
-});
+// The raw database is not served (B-1): it holds every installation's telemetry id. What can be downloaded is the
+// anonymised export below, the same aggregates the page shows, for every timespan the page offers.
+const exportTimespans = [1, 7, 30, 90, 365, 36500];
+const exportMaxAge = 3600;
+let exportCache = null;
 
 app.get('/data', (req, res) => {
     log('get /data');
-    const data = {};
     const timespan = parseInt(req.query.timespan, 10) || 36500;
+    aggregate(timespan, data => res.json(data));
+});
+
+app.get(['/export.json', '/export.csv'], (req, res) => {
+    log('get', req.path);
+    const send = () => {
+        res.set('Cache-Control', 'max-age=' + exportMaxAge);
+        if (req.path === '/export.csv') {
+            res.set('Content-Type', 'text/csv;charset=utf-8');
+            res.set('Content-Disposition', 'attachment; filename="redmatic-telemetry-export.csv"');
+            res.send(exportCsv(exportCache.data));
+        } else {
+            res.set('Content-Disposition', 'attachment; filename="redmatic-telemetry-export.json"');
+            res.json(exportCache.data);
+        }
+    };
+    if (exportCache && (Date.now() - exportCache.time) < exportMaxAge * 1000) {
+        return send();
+    }
+    const timespans = {};
+    const next = i => {
+        if (i >= exportTimespans.length) {
+            exportCache = {time: Date.now(), data: {
+                generated: new Date().toISOString(),
+                description: 'Anonymised aggregates of the RedMatic telemetry: counts of installations first or last seen in the timespan, per value. No telemetry ids, no per-installation rows.',
+                timespans
+            }};
+            return send();
+        }
+        const timespan = exportTimespans[i];
+        aggregate(timespan, data => {
+            timespans[timespan === 36500 ? 'all' : String(timespan)] = data;
+            next(i + 1);
+        });
+    };
+    next(0);
+});
+
+function exportCsv(data) {
+    const dimensions = {
+        versions: 'redmatic',
+        ccuVersions: 'ccu',
+        platforms: 'platform',
+        products: 'product',
+        nodes: 'node'
+    };
+    const field = value => {
+        const str = value === null || value === undefined ? '' : String(value);
+        return /[",\r\n]/.test(str) ? '"' + str.replace(/"/g, '""') + '"' : str;
+    };
+    const lines = ['timespan,dimension,value,count'];
+    Object.keys(data.timespans).forEach(timespan => {
+        const t = data.timespans[timespan];
+        lines.push([timespan, 'total', '', t.total].map(field).join(','));
+        Object.keys(dimensions).forEach(key => {
+            (t[key] || []).forEach(([value, count]) => {
+                lines.push([timespan, dimensions[key], value, count].map(field).join(','));
+            });
+        });
+        (t.countries || []).forEach(([cc, country, count]) => {
+            lines.push([timespan, 'country', cc, count].map(field).join(','));
+        });
+        (t.byday || []).forEach(([ts, count]) => {
+            lines.push([timespan, 'new', new Date(ts).toISOString(), count].map(field).join(','));
+        });
+    });
+    return lines.join('\r\n') + '\r\n';
+}
+
+function aggregate(timespan, callback) {
+    const data = {};
     const where = 'WHERE (created > (SELECT DATETIME("now", "-' + timespan + ' day")) OR (updated > (SELECT DATETIME("now", "-' + timespan + ' day"))))';
     db.serialize(() => {
         db.get('SELECT COUNT(redmatic) AS total FROM installation ' + where + ';', (error, row) => {
@@ -119,10 +190,10 @@ app.get('/data', (req, res) => {
         }
         db.all(query, (error, rows) => {
             data.byday = rows.map(o => [parseInt(o.ts, 10) * 1000, o.count]);
-            res.json(data);
+            callback(data);
         });
     });
-});
+}
 
 app.post('/', bodyParser.json(), (req, res) => {
     res.send('');
