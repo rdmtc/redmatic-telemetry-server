@@ -79,16 +79,16 @@ describe('POST / (telemetry)', () => {
         assert.equal(inst.cc, '-');
     });
 
-    it('ignores a request without a curl user agent', async () => {
-        await postTelemetry(server, 3, telemetryBody(), {'User-Agent': 'Mozilla/5.0'});
-        await new Promise((resolve) => setTimeout(resolve, 100));
+    it('refuses a request without a curl user agent', async () => {
+        const res = await postTelemetry(server, 3, telemetryBody(), {'User-Agent': 'Mozilla/5.0'});
+        assert.equal(res.status, 400);
         assert.equal(await row(3), undefined);
     });
 
-    it('ignores a body without ccu or redmatic', async () => {
-        await postTelemetry(server, 4, {redmatic: '8.0.0'});
-        await postTelemetry(server, 5, {ccu: {VERSION: '3.89.11'}});
-        await new Promise((resolve) => setTimeout(resolve, 100));
+    it('refuses a body without ccu or redmatic', async () => {
+        assert.equal((await postTelemetry(server, 4, {redmatic: '8.0.0'})).status, 400);
+        assert.equal((await postTelemetry(server, 5, {ccu: {VERSION: '3.89.11'}})).status, 400);
+        assert.equal((await postTelemetry(server, 5, [1, 2])).status, 400);
         assert.equal(await row(4), undefined);
         assert.equal(await row(5), undefined);
     });
@@ -293,5 +293,94 @@ describe('the log upload is gone (B-2, B-3)', () => {
     it('/logs answers 404', async () => {
         assert.equal((await server.fetch('/logs/')).status, 404);
         assert.equal((await server.fetch('/logs/nick/20260101-000000.log.gz')).status, 404);
+    });
+});
+
+describe('malformed requests and database errors (B-4)', () => {
+    let server;
+    before(async () => {
+        server = await startServer();
+    });
+    after(() => server.close());
+
+    const count = async () => (await server.db.get('SELECT COUNT(*) AS n FROM installation;')).n;
+
+    it('answers 400 without the headers, and stores nothing', async () => {
+        const noAgent = await server.fetch('/', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json', 'X-RedMatic-uuid': uuid(1)},
+            body: JSON.stringify(telemetryBody()),
+        });
+        assert.equal(noAgent.status, 400);
+        const noId = await server.fetch('/', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json', 'User-Agent': 'curl/8.9.1'},
+            body: JSON.stringify(telemetryBody()),
+        });
+        assert.equal(noId.status, 400);
+        assert.equal(await count(), 0);
+    });
+
+    it('accepts only a whole id, and stores it in lower case', async () => {
+        const res = await postTelemetry(server, 1, telemetryBody(), {'X-RedMatic-uuid': 'xx' + uuid(1) + 'yy'});
+        assert.equal(res.status, 400);
+        assert.equal((await postTelemetry(server, 1, telemetryBody(), {'X-RedMatic-uuid': 'not-an-id'})).status, 400);
+        const upper = '0000000A-0000-4000-8000-00000000000B';
+        assert.equal((await postTelemetry(server, 1, telemetryBody(), {'X-RedMatic-uuid': upper})).status, 200);
+        const row = await server.db.get('SELECT uuid FROM installation;');
+        assert.equal(row.uuid, upper.toLowerCase());
+    });
+
+    it('answers 400 to a malformed JSON body', async () => {
+        const res = await postTelemetry(server, 2, '{"redmatic":');
+        assert.equal(res.status, 400);
+    });
+
+    it('takes the client address the proxy appended to X-Forwarded-For', async () => {
+        // a client-sent value on the left, the address the proxy saw on the right
+        await postTelemetry(server, 3, telemetryBody(), {'X-Forwarded-For': '198.51.100.7, 192.0.2.10'});
+        const row = await server.db.get('SELECT cc FROM installation WHERE uuid=?;', [uuid(3)]);
+        assert.equal(row.cc, 'DE');
+    });
+
+    it('rolls back a failed store, and the next one works', async () => {
+        await server.db.exec('ALTER TABLE node RENAME TO node_away;');
+        const res = await postTelemetry(server, 4, telemetryBody());
+        assert.equal(res.status, 500);
+        assert.equal(await server.db.get('SELECT uuid FROM installation WHERE uuid=?;', [uuid(4)]), undefined);
+        await server.db.exec('ALTER TABLE node_away RENAME TO node;');
+        assert.equal((await postTelemetry(server, 4, telemetryBody())).status, 200);
+        assert.ok(await server.db.get('SELECT uuid FROM installation WHERE uuid=?;', [uuid(4)]));
+    });
+});
+
+describe('X-Forwarded-For from an untrusted peer (B-4)', () => {
+    let server;
+    before(async () => {
+        server = await startServer({app: {trustProxy: false}});
+    });
+    after(() => server.close());
+
+    it('is ignored', async () => {
+        await postTelemetry(server, 1, telemetryBody(), {'X-Forwarded-For': '192.0.2.10'});
+        const row = await server.db.get('SELECT cc FROM installation WHERE uuid=?;', [uuid(1)]);
+        assert.notEqual(row.cc, 'DE');
+    });
+});
+
+describe('a closed database (B-4)', () => {
+    let server;
+    before(async () => {
+        server = await startServer();
+        await new Promise((resolve) => server.db.raw.close(resolve));
+    });
+    after(() => server.close());
+
+    it('/total.svg, /data and POST / answer 500, and the server stays up', async () => {
+        assert.equal((await server.fetch('/total.svg')).status, 500);
+        assert.equal((await server.fetch('/data?timespan=7')).status, 500);
+        assert.equal((await server.fetch('/export.json')).status, 500);
+        assert.equal((await postTelemetry(server, 1, telemetryBody())).status, 500);
+        assert.equal((await server.fetch('/')).status, 200);
     });
 });

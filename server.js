@@ -15,58 +15,58 @@ const pkg = require('./package.json');
 const exportTimespans = [1, 7, 30, 90, 365, 36500];
 const exportMaxAge = 3600;
 
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /**
  * Creates the Express app.
  * @param {object} options
  * @param {object} options.db the telemetry database (sqlite3.Database)
  * @param {{lookup: function(string): {code: string, country: string}}} options.ip2cc the country lookup
  * @param {function(...*)} [options.log] logger
+ * @param {boolean|number|string} [options.trustProxy] Express' "trust proxy": which peers may set X-Forwarded-For
  * @returns {object} the Express app
  */
-function createApp({db, ip2cc, log = defaultLog}) {
+function createApp({db, ip2cc, log = defaultLog, trustProxy = 'loopback, linklocal, uniquelocal'}) {
     const app = express();
+    const q = promisify(db);
+    const exclusive = mutex();
     let exportCache = null;
+
+    // Only the reverse proxy's X-Forwarded-For counts: req.ip is the client address it saw (B-4).
+    app.set('trust proxy', trustProxy);
 
     app.use(express.static(path.join(__dirname, 'www')));
 
-    app.get('/total.svg', (req, res) => {
-        db.get('SELECT COUNT(redmatic) AS total FROM installation;', (error, row) => {
-            const installs = formatInstalls(row.total);
+    app.get(
+        '/total.svg',
+        route(async (req, res) => {
+            const row = await q.get('SELECT COUNT(redmatic) AS total FROM installation;');
             res.set('Cache-Control', 'max-age=3600');
             res.set('Content-Type', 'image/svg+xml;charset=utf-8');
-            res.status(200).send(badge(installs));
-        });
-    });
+            res.status(200).send(badge(formatInstalls(row.total)));
+        }),
+    );
 
-    app.get('/data', (req, res) => {
-        log('get /data');
-        const timespan = parseInt(req.query.timespan, 10) || 36500;
-        aggregate(db, timespan, (data) => res.json(data));
-    });
+    app.get(
+        '/data',
+        route(async (req, res) => {
+            log('get /data');
+            const timespan = parseInt(req.query.timespan, 10) || 36500;
+            res.json(await aggregate(q, timespan));
+        }),
+    );
 
     // The raw database is not served (B-1): it holds every installation's telemetry id. What can be downloaded is
     // this anonymised export, the same aggregates the page shows, for every timespan the page offers.
-    app.get(['/export.json', '/export.csv'], (req, res) => {
-        log('get', req.path);
-        const send = () => {
-            res.set('Cache-Control', 'max-age=' + exportMaxAge);
-            if (req.path === '/export.csv') {
-                res.set('Content-Type', 'text/csv;charset=utf-8');
-                res.set('Content-Disposition', 'attachment; filename="redmatic-telemetry-export.csv"');
-                res.send(exportCsv(exportCache.data));
-            } else {
-                res.set('Content-Disposition', 'attachment; filename="redmatic-telemetry-export.json"');
-                res.json(exportCache.data);
-            }
-        };
-
-        if (exportCache && Date.now() - exportCache.time < exportMaxAge * 1000) {
-            return send();
-        }
-
-        const timespans = {};
-        const next = (i) => {
-            if (i >= exportTimespans.length) {
+    app.get(
+        ['/export.json', '/export.csv'],
+        route(async (req, res) => {
+            log('get', req.path);
+            if (!exportCache || Date.now() - exportCache.time >= exportMaxAge * 1000) {
+                const timespans = {};
+                for (const timespan of exportTimespans) {
+                    timespans[timespan === 36500 ? 'all' : String(timespan)] = await aggregate(q, timespan);
+                }
                 exportCache = {
                     time: Date.now(),
                     data: {
@@ -77,164 +77,191 @@ function createApp({db, ip2cc, log = defaultLog}) {
                         timespans,
                     },
                 };
-                return send();
             }
-            const timespan = exportTimespans[i];
-            aggregate(db, timespan, (data) => {
-                timespans[timespan === 36500 ? 'all' : String(timespan)] = data;
-                next(i + 1);
-            });
-        };
-        next(0);
-    });
+            res.set('Cache-Control', 'max-age=' + exportMaxAge);
+            if (req.path === '/export.csv') {
+                res.set('Content-Type', 'text/csv;charset=utf-8');
+                res.set('Content-Disposition', 'attachment; filename="redmatic-telemetry-export.csv"');
+                res.send(exportCsv(exportCache.data));
+            } else {
+                res.set('Content-Disposition', 'attachment; filename="redmatic-telemetry-export.json"');
+                res.json(exportCache.data);
+            }
+        }),
+    );
 
-    app.post('/', bodyParser.json(), (req, res) => {
-        res.send('');
-        const clientAddress = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
-        processData(req.headers, req.body, clientAddress.replace('::ffff:', ''));
-    });
+    app.post(
+        '/',
+        bodyParser.json(),
+        route(async (req, res) => {
+            const userAgent = String(req.get('user-agent') || '');
+            const uuid = String(req.get('x-redmatic-uuid') || '');
+            const data = req.body;
+            if (
+                !userAgent.startsWith('curl/') ||
+                !uuidPattern.test(uuid) ||
+                !data ||
+                typeof data !== 'object' ||
+                !data.ccu ||
+                typeof data.ccu !== 'object' ||
+                !data.redmatic
+            ) {
+                log('invalid request');
+                return res.status(400).send('');
+            }
+            await store(uuid.toLowerCase(), data, clientAddress(req));
+            res.send('');
+        }),
+    );
 
-    function processData(headers, data, ip) {
-        if (
-            headers['user-agent'].startsWith('curl/') &&
-            headers['x-redmatic-uuid'].match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{8}/) &&
-            data &&
-            data.ccu &&
-            data.redmatic
-        ) {
-            const country = ip2cc.lookup(ip);
-            const installation = {
-                cc: (country && country.code) || null,
-                country: (country && country.country) || null,
-                uuid: headers['x-redmatic-uuid'],
-                redmatic: data.redmatic,
-                ccu: data.ccu.VERSION,
-                platform: normalizePlatform(data.ccu.PLATFORM),
-                product: data.ccu.PRODUCT,
-            };
-            delete data['ccu'];
-            delete data['redmatic'];
-            delete data['node-red'];
-            delete data.nodejs;
-            delete data.ain2;
-            delete data.npm;
-            db.get('SELECT redmatic FROM installation WHERE uuid=?;', installation.uuid, (error, res) => {
-                if (res) {
-                    updateData(installation, data);
-                } else {
-                    insertData(installation, data);
-                }
-            });
-        } else {
-            log('invalid request');
+    // Errors: a malformed body is the client's (400), everything else is ours (500). The process stays up.
+    app.use((err, req, res, _next) => {
+        const status = err.status >= 400 && err.status < 500 ? err.status : 500;
+        log(req.method, req.path, status, err.message);
+        if (!res.headersSent) {
+            res.status(status).send('');
         }
+    });
+
+    function clientAddress(req) {
+        return String(req.ip || '').replace(/^::ffff:/, '');
     }
 
-    function insertData(inst, nodes) {
-        log('insert', inst.cc);
-        db.serialize(() => {
-            db.run('BEGIN TRANSACTION;');
-            db.run(
-                'INSERT INTO installation (uuid, redmatic, initial, ccu, platform, product, created, counter, cc, country) VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP,0,?,?);',
-                [inst.uuid, inst.redmatic, inst.redmatic, inst.ccu, inst.platform, inst.product, inst.cc, inst.country],
-            );
-            updateNodes(inst.uuid, nodes);
-            db.run('COMMIT;');
-        });
-    }
-
-    function updateData(inst, nodes) {
-        log('update', inst.cc);
-        db.serialize(() => {
-            db.run('BEGIN TRANSACTION;');
-            db.run(
-                'UPDATE installation SET redmatic=?, ccu=?, platform=?, product=?, cc=?, country=?, updated=CURRENT_TIMESTAMP, counter=counter+1 WHERE uuid=?;',
-                [inst.redmatic, inst.ccu, inst.platform, inst.product, inst.cc, inst.country, inst.uuid],
-            );
-            updateNodes(inst.uuid, nodes);
-            db.run('COMMIT;');
-        });
-    }
-
-    function updateNodes(uuid, nodes) {
-        db.run('DELETE FROM node WHERE installation_uuid=?', uuid);
-        Object.keys(nodes).forEach((name) => {
-            db.run('INSERT INTO node (name, version, installation_uuid) VALUES (?,?,?);', [name, nodes[name], uuid]);
-        });
+    async function store(uuid, data, ip) {
+        const country = ip2cc.lookup(ip);
+        const installation = {
+            cc: (country && country.code) || null,
+            country: (country && country.country) || null,
+            uuid,
+            redmatic: data.redmatic,
+            ccu: data.ccu.VERSION,
+            platform: normalizePlatform(data.ccu.PLATFORM),
+            product: data.ccu.PRODUCT,
+        };
+        const nodes = {...data};
+        for (const key of ['ccu', 'redmatic', 'node-red', 'nodejs', 'ain2', 'npm']) {
+            delete nodes[key];
+        }
+        await exclusive(() =>
+            transaction(q, async () => {
+                const known = await q.get('SELECT redmatic FROM installation WHERE uuid=?;', [uuid]);
+                const i = installation;
+                if (known) {
+                    log('update', i.cc);
+                    await q.run(
+                        'UPDATE installation SET redmatic=?, ccu=?, platform=?, product=?, cc=?, country=?, updated=CURRENT_TIMESTAMP, counter=counter+1 WHERE uuid=?;',
+                        [i.redmatic, i.ccu, i.platform, i.product, i.cc, i.country, uuid],
+                    );
+                } else {
+                    log('insert', i.cc);
+                    await q.run(
+                        'INSERT INTO installation (uuid, redmatic, initial, ccu, platform, product, created, counter, cc, country) VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP,0,?,?);',
+                        [uuid, i.redmatic, i.redmatic, i.ccu, i.platform, i.product, i.cc, i.country],
+                    );
+                }
+                await q.run('DELETE FROM node WHERE installation_uuid=?', [uuid]);
+                for (const [name, version] of Object.entries(nodes)) {
+                    await q.run('INSERT INTO node (name, version, installation_uuid) VALUES (?,?,?);', [
+                        name,
+                        version,
+                        uuid,
+                    ]);
+                }
+            }),
+        );
     }
 
     return app;
 }
 
+/** An Express handler from an async function: a rejection goes to the error handler (Express 4 does not). */
+function route(fn) {
+    return (req, res, next) => fn(req, res).catch(next);
+}
+
+/** Runs the calls one after another, so two transactions on the one connection never interleave. */
+function mutex() {
+    let last = Promise.resolve();
+    return (fn) => {
+        const result = last.then(fn);
+        last = result.catch(() => {});
+        return result;
+    };
+}
+
+async function transaction(q, fn) {
+    await q.run('BEGIN TRANSACTION;');
+    try {
+        await fn();
+        await q.run('COMMIT;');
+    } catch (err) {
+        await q.run('ROLLBACK;').catch(() => {});
+        throw err;
+    }
+}
+
+function promisify(db) {
+    return {
+        get: (sql, params = []) =>
+            new Promise((resolve, reject) => db.get(sql, params, (err, row) => (err ? reject(err) : resolve(row)))),
+        all: (sql, params = []) =>
+            new Promise((resolve, reject) => db.all(sql, params, (err, rows) => (err ? reject(err) : resolve(rows)))),
+        run: (sql, params = []) =>
+            new Promise((resolve, reject) => db.run(sql, params, (err) => (err ? reject(err) : resolve()))),
+    };
+}
+
 /**
  * The aggregates of the page (and the export) for one timespan.
  */
-function aggregate(db, timespan, callback) {
+async function aggregate(q, timespan) {
     const data = {};
     const since = '(SELECT DATETIME("now", "-' + timespan + ' day"))';
     const where = 'WHERE (created > ' + since + ' OR (updated > ' + since + '))';
-    db.serialize(() => {
-        db.get('SELECT COUNT(redmatic) AS total FROM installation ' + where + ';', (error, row) => {
-            Object.assign(data, row);
-        });
-        db.all(
-            'SELECT product, COUNT(uuid) AS count FROM installation ' +
+    const group = (column) =>
+        q.all(
+            'SELECT ' +
+                column +
+                ', COUNT(uuid) AS count FROM installation ' +
                 where +
-                ' GROUP BY product ORDER BY count DESC;',
-            (error, rows) => {
-                data.products = rows.map((o) => [o.product, o.count]);
-            },
+                ' GROUP BY ' +
+                column +
+                ' ORDER BY count DESC;',
         );
-        db.all(
+
+    Object.assign(data, await q.get('SELECT COUNT(redmatic) AS total FROM installation ' + where + ';'));
+    data.products = (await group('product')).map((o) => [o.product, o.count]);
+    data.countries = (
+        await q.all(
             'SELECT cc, country, COUNT(uuid) AS count FROM installation ' + where + ' GROUP BY cc ORDER BY count DESC;',
-            (error, rows) => {
-                data.countries = rows.map((o) => [o.cc, o.country, o.count]);
-            },
-        );
-        db.all(
-            'SELECT platform, COUNT(uuid) AS count FROM installation ' +
-                where +
-                ' GROUP BY platform ORDER BY count DESC;',
-            (error, rows) => {
-                data.platforms = rows.map((o) => [o.platform, o.count]);
-            },
-        );
-        db.all(
-            'SELECT ccu, COUNT(uuid) AS count FROM installation ' + where + ' GROUP BY ccu ORDER BY count DESC;',
-            (error, rows) => {
-                data.ccuVersions = rows.map((o) => [o.ccu, o.count]).sort((a, b) => semverCompare(b[0], a[0]));
-            },
-        );
-        db.all(
+        )
+    ).map((o) => [o.cc, o.country, o.count]);
+    data.platforms = (await group('platform')).map((o) => [o.platform, o.count]);
+    data.ccuVersions = (await group('ccu')).map((o) => [o.ccu, o.count]).sort((a, b) => semverCompare(b[0], a[0]));
+    data.nodes = (
+        await q.all(
             'SELECT node.name AS name, COUNT(node.installation_uuid) AS count FROM node LEFT JOIN installation ON installation.uuid = node.installation_uuid ' +
                 where +
                 ' GROUP BY name ORDER BY count DESC;',
-            (error, rows) => {
-                data.nodes = rows
-                    .filter((o) => o.name.startsWith('redmatic-') || o.name.startsWith('node-red-'))
-                    .map((o) => [o.name, o.count]);
-            },
-        );
-        db.all(
-            'SELECT redmatic AS version, COUNT(uuid) AS count FROM installation ' + where + ' GROUP BY redmatic;',
-            (error, rows) => {
-                data.versions = rows.map((o) => [o.version, o.count]).sort((a, b) => semverCompare(b[0], a[0]));
-            },
-        );
-        const format = timespan > 7 ? '%Y-%m-%d' : '%Y-%m-%d %H:00:00';
-        const query =
-            'SELECT strftime("' +
+        )
+    )
+        .filter((o) => o.name.startsWith('redmatic-') || o.name.startsWith('node-red-'))
+        .map((o) => [o.name, o.count]);
+    data.versions = (await group('redmatic'))
+        .map((o) => [o.redmatic, o.count])
+        .sort((a, b) => semverCompare(b[0], a[0]));
+    const format = timespan > 7 ? '%Y-%m-%d' : '%Y-%m-%d %H:00:00';
+    const rows = await q.all(
+        'SELECT strftime("' +
             format +
             '", created) AS date, strftime("%s", strftime("' +
             format +
             '", created)) AS ts, COUNT(created) AS count FROM installation WHERE created > ' +
             since +
-            ' GROUP BY date ORDER BY date;';
-        db.all(query, (error, rows) => {
-            data.byday = rows.map((o) => [parseInt(o.ts, 10) * 1000, o.count]);
-            callback(data);
-        });
-    });
+            ' GROUP BY date ORDER BY date;',
+    );
+    data.byday = rows.map((o) => [parseInt(o.ts, 10) * 1000, o.count]);
+    return data;
 }
 
 /**
@@ -330,7 +357,12 @@ function main() {
     db.on('error', (err) => defaultLog(err.message));
     const ip2cc = new Ip2cc(path.join(__dirname, 'IP2LOCATION-LITE-DB1.CSV'));
 
-    const app = createApp({db, ip2cc});
+    const trustProxy = process.env.TRUST_PROXY;
+    const app = createApp({
+        db,
+        ip2cc,
+        ...(trustProxy ? {trustProxy: /^\d+$/.test(trustProxy) ? parseInt(trustProxy, 10) : trustProxy} : {}),
+    });
     http.createServer(app).listen(port, () => {
         defaultLog(pkg.name, 'listening on port', port);
     });
