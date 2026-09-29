@@ -16,9 +16,7 @@
     "flot": "^4.2.3",
     "ip2countrycode": "^1.0.0",
     "jquery": "^3.6.1",
-    "mkdirp": "^1.0.4",
     "semantic-compare": "^1.0.2",
-    "serve-index": "^1.9.1",
     "sqlite3": "^5.1.2"
   }
 }

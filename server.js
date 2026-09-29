@@ -4,13 +4,10 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 
-const mkdirp = require('mkdirp');
-
 const sqlite3 = require('sqlite3').verbose();
 
 const express = require('express');
 const bodyParser = require('body-parser');
-const serveIndex = require('serve-index');
 
 const semverCompare = require('semantic-compare');
 
@@ -21,8 +18,6 @@ const port = parseInt(process.env.PORT, 10) || 8080;
 const dbfile = process.env.DB || path.join(__dirname, 'redmatic.db');
 const certfile = process.env.CERT || path.join(__dirname, '/server.cert');
 const keyfile = process.env.KEY || path.join(__dirname, '/server.key');
-
-const logPath = process.env.LOGPATH || path.join(__dirname, '/logs');
 
 const db = new sqlite3.Database(dbfile);
 
@@ -36,29 +31,6 @@ db.on('error', err => {
 const app = express();
 
 app.use(express.static(path.join(__dirname, 'www')));
-
-app.use('/logs', express.static(logPath));
-app.use('/logs', (req, res, next) => {
-    const auth = {login: process.env.USER || 'logs', password: process.env.PASS || 'changeme'};
-
-    const b64auth = (req.headers.authorization || '').split(' ')[1] || '';
-    const [login, password] = new Buffer.from(b64auth, 'base64').toString().split(':');
-
-    if (login && password && login === auth.login && password === auth.password) {
-        return next()
-    }
-
-    res.set('WWW-Authenticate', 'Basic realm="RedMatic Logs"');
-    res.status(401).send('Authentication required.');
-});
-
-app.use('/logs', serveIndex(logPath, {
-    view: 'details',
-    filter: (filename, index, files, dir) => {
-        return filename !== 'lost+found'
-    }
-}));
-
 
 app.get('/total.svg', (req, res) => {
     db.get('SELECT COUNT(redmatic) AS total FROM installation;', (error, row) => {
@@ -199,40 +171,6 @@ app.post('/', bodyParser.json(), (req, res) => {
     res.send('');
     const clientAddress = req.headers['x-forwarded-for'] || req.connection.remoteAddress;
     processData(req.headers, req.body, clientAddress.replace('::ffff:', ''));
-});
-
-app.post('/log', bodyParser.raw({limit: '100kb', inflate: false}), (req, res) => {
-    if (req.headers['user-agent'].startsWith('curl/') && req.headers['x-redmatic-nick']) {
-        const [nickname] = req.headers['x-redmatic-nick'].split('/');
-        const logfile = path.join(nickname, ts() + '.log');
-        const clientAddress = req.headers['x-forwarded-for'] || req.connection.remoteAddress;
-
-        log(`upload ${clientAddress} ${logfile} ${req.body && req.body.length}`);
-
-        mkdirp(path.join(logPath, nickname), err => {
-            if (err) {
-                log(err.message);
-                res.status(500).send(err.message);
-            } else {
-                if (err) {
-                    log(err.message);
-                    res.status(500).send(err.message);
-                } else {
-                    fs.writeFile(path.join(logPath, logfile + '.gz'), req.body, err => {
-                        if (err) {
-                            log(err.message);
-                            res.status(500).send(err.message);
-                        } else {
-                            log(`wrote ${logfile}.gz`);
-                            res.send(logfile);
-                        }
-                    });
-                }
-            }
-        });
-    } else {
-        res.status(401).send('unauthorized');
-    }
 });
 
 http.createServer({
