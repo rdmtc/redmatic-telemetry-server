@@ -11,6 +11,13 @@
     --series-hover: #1f5fae;
     --other: #b4b3ad;
     --accent-bg: #e8f0fb;
+    --c0: #2a78d6;
+    --c1: #e07b39;
+    --c2: #3a9a5b;
+    --c3: #8b5cc7;
+    --c4: #cf4f4b;
+    --c5: #23979a;
+    --c6: #b8961e;
     --focus: #2a78d6;
     --radius: 10px;
     font-family:
@@ -39,6 +46,13 @@
         --series-hover: #6aa6ee;
         --other: #5c5b57;
         --accent-bg: #1c2a3d;
+        --c0: #3987e5;
+        --c1: #f08d4c;
+        --c2: #4fb572;
+        --c3: #a37ce0;
+        --c4: #e56a66;
+        --c5: #36b3b6;
+        --c6: #d4b032;
         --focus: #6aa6ee;
     }
 }
@@ -56,6 +70,13 @@
     --series-hover: #6aa6ee;
     --other: #5c5b57;
     --accent-bg: #1c2a3d;
+    --c0: #3987e5;
+    --c1: #f08d4c;
+    --c2: #4fb572;
+    --c3: #a37ce0;
+    --c4: #e56a66;
+    --c5: #36b3b6;
+    --c6: #d4b032;
     --focus: #6aa6ee;
 }
 
@@ -339,4 +360,105 @@ footer {
     font-size: 0.85rem;
     box-shadow: 0 4px 14px rgb(0 0 0 / 0.15);
     max-width: 280px;
+}
+
+.card-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 16px;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 12px;
+}
+
+.card-head h2 {
+    margin: 0;
+}
+
+.card-head .filter {
+    margin: 0;
+}
+
+.filter select {
+    font: inherit;
+    padding: 4px 6px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--text);
+}
+
+/* the trend's bands: a categorical palette, the "other" band grey */
+.chart .area {
+    stroke: var(--surface);
+    stroke-width: 0.5;
+}
+
+.s0 {
+    fill: var(--c0);
+    background: var(--c0);
+}
+.s1 {
+    fill: var(--c1);
+    background: var(--c1);
+}
+.s2 {
+    fill: var(--c2);
+    background: var(--c2);
+}
+.s3 {
+    fill: var(--c3);
+    background: var(--c3);
+}
+.s4 {
+    fill: var(--c4);
+    background: var(--c4);
+}
+.s5 {
+    fill: var(--c5);
+    background: var(--c5);
+}
+.s6 {
+    fill: var(--c6);
+    background: var(--c6);
+}
+.chart .area.other,
+.swatch.other {
+    fill: var(--other);
+    background: var(--other);
+}
+
+.chart .veil {
+    fill: var(--surface);
+    opacity: 0.45;
+    pointer-events: none;
+}
+
+.chart .marker {
+    stroke: var(--text-3);
+    stroke-dasharray: 3 3;
+}
+
+.legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+    list-style: none;
+    margin: 8px 0 0;
+    padding: 0;
+    color: var(--text-2);
+    font-size: 0.85rem;
+}
+
+.legend li {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.swatch {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
 }

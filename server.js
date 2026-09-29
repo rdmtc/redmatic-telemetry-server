@@ -9,10 +9,13 @@ const Ip2cc = require('ip2countrycode');
 const pkg = require('./package.json');
 const {database, migrate, open} = require('./lib/db.js');
 const {aggregate, exportCsv} = require('./lib/stats.js');
+const trends = require('./lib/trends.js');
 const {config} = require('./lib/config.js');
 
 // The timespans (days) the page offers, and the export covers; 36500 is "all".
 const timespans = [1, 7, 30, 90, 365, 36500];
+// The ranges (days) /data/trend serves
+const trendDays = [30, 90, 180, 365, 730, 1825, 36500];
 // /data and the export are cached this long (seconds): telemetry arrives only when an addon starts
 const defaultCacheSeconds = 300;
 
@@ -83,6 +86,23 @@ function createApp({
         res.set('Cache-Control', 'max-age=3600');
         res.set('Content-Type', 'image/svg+xml;charset=utf-8');
         res.status(200).send(badge(formatInstalls(row.total)));
+    });
+
+    // The daily snapshots of one dimension (task 11)
+    app.get('/data/trend', (req, res) => {
+        const dimension = req.query.dimension === undefined ? 'active' : String(req.query.dimension);
+        const days = req.query.days === undefined ? 365 : Number(req.query.days);
+        if (!trends.DIMENSIONS.includes(dimension) || !trendDays.includes(days)) {
+            return res.status(400).send('');
+        }
+        const key = 'trend ' + dimension + ' ' + days;
+        let hit = cache.get(key);
+        if (!hit || now() - hit.time >= cacheSeconds * 1000) {
+            hit = {time: now(), data: trends.trend(q, dimension, days, new Date(now()))};
+            cache.set(key, hit);
+        }
+        res.set('Cache-Control', 'max-age=' + cacheSeconds);
+        res.json(hit.data);
     });
 
     app.get('/data', (req, res) => {
@@ -288,6 +308,31 @@ function badge(installs) {
     return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="80" height="20"><linearGradient id="b" x2="0" y2="100%"><stop offset="0" stop-color="#bbb" stop-opacity=".1"/><stop offset="1" stop-opacity=".1"/></linearGradient><clipPath id="a"><rect width="80" height="20" rx="3" fill="#fff"/></clipPath><g clip-path="url(#a)"><path fill="#555" d="M0 0h49v20H0z"/><path fill="#007ec6" d="M49 0h31v20H49z"/><path fill="url(#b)" d="M0 0h80v20H0z"/></g><g fill="#fff" text-anchor="middle" font-family="DejaVu Sans,Verdana,Geneva,sans-serif" font-size="110"><text x="255" y="150" fill="#010101" fill-opacity=".3" transform="scale(.1)" textLength="390">installs</text><text x="255" y="140" transform="scale(.1)" textLength="390">installs</text><text x="635" y="150" fill="#010101" fill-opacity=".3" transform="scale(.1)" textLength="210">${installs}</text><text x="635" y="140" transform="scale(.1)" textLength="210">${installs}</text></g></svg>`;
 }
 
+/**
+ * Runs the daily job (task 11's snapshot) now and then every hour; each run writes what the day still lacks.
+ * Returns a function that stops it.
+ */
+function startDaily(db, {log = defaultLog, now = Date.now, intervalMs = 3600 * 1000} = {}) {
+    const q = database(db);
+    const run = () => {
+        try {
+            const done = trends.daily(q, new Date(now()));
+            if (done.new || done.backfilled || done.snapshot) {
+                log('daily', JSON.stringify(done));
+            }
+        } catch (err) {
+            log('daily job failed:', err.message);
+        }
+    };
+    const first = setTimeout(run, 0);
+    const timer = setInterval(run, intervalMs);
+    timer.unref();
+    return () => {
+        clearTimeout(first);
+        clearInterval(timer);
+    };
+}
+
 function defaultLog(...args) {
     console.log([ts(), ...args].join(' '));
 }
@@ -322,6 +367,7 @@ function main() {
     const db = open(dbPath);
     const ip2cc = countryLookup(ip2locationCsv);
     const app = createApp({db, ip2cc, trustProxy, rateLimit});
+    startDaily(db);
     http.createServer(app).listen(port, () => {
         defaultLog(pkg.name, 'listening on port', port);
     });
@@ -343,6 +389,7 @@ if (require.main === module) {
 
 module.exports = {
     createApp,
+    startDaily,
     migrate,
     validate,
     rateLimiter,

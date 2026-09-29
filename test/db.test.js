@@ -4,8 +4,12 @@ const {describe, it} = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 
-const {migrate, open} = require('../lib/db.js');
+const {migrate, migrations, open} = require('../lib/db.js');
 const {makeDb, uuid} = require('./helpers.js');
+
+// every step, and the newest version: a new migration only adds its own assertions
+const ALL = migrations.map((m) => m.version);
+const LATEST = ALL[ALL.length - 1];
 
 const indexes = ['installation_created', 'installation_updated', 'node_installation_uuid'];
 
@@ -24,9 +28,9 @@ async function shape(db) {
 describe('schema migrations (task 4)', () => {
     it('gives an empty file the full schema', async () => {
         const db = await makeDb();
-        assert.deepEqual(migrate(db.raw), [1, 2, 3]);
+        assert.deepEqual(migrate(db.raw), ALL);
         const s = await shape(db);
-        assert.deepEqual(s.tables, ['installation', 'node']);
+        assert.deepEqual(s.tables, ['daily_stats', 'installation', 'node']);
         assert.deepEqual(s.columns, [
             'uuid',
             'redmatic',
@@ -42,7 +46,7 @@ describe('schema migrations (task 4)', () => {
             'lite',
         ]);
         assert.deepEqual(s.idx.sort(), [...indexes].sort());
-        assert.equal(s.version, 3);
+        assert.equal(s.version, LATEST);
         await db.close();
     });
 
@@ -58,11 +62,11 @@ describe('schema migrations (task 4)', () => {
                 [uuid(i)],
             );
         }
-        assert.deepEqual(migrate(db.raw), [1, 2, 3]);
+        assert.deepEqual(migrate(db.raw), ALL);
         const s = await shape(db);
         assert.ok(s.columns.includes('lite'));
         assert.deepEqual(s.idx.sort(), [...indexes].sort());
-        assert.equal(s.version, 3);
+        assert.equal(s.version, LATEST);
         assert.equal((await db.get('SELECT COUNT(*) AS n FROM installation;')).n, 50);
         assert.equal((await db.get('SELECT COUNT(*) AS n FROM node;')).n, 50);
         assert.equal((await db.get('SELECT cc FROM installation WHERE uuid=?;', [uuid(7)])).cc, 'DE');
@@ -72,8 +76,8 @@ describe('schema migrations (task 4)', () => {
     it('recognises a lite column added before the migrations', async () => {
         const db = await makeDb({legacy: true});
         await db.exec('ALTER TABLE installation ADD COLUMN lite VARCHAR (32);');
-        assert.deepEqual(migrate(db.raw), [1, 2, 3]);
-        assert.equal((await shape(db)).version, 3);
+        assert.deepEqual(migrate(db.raw), ALL);
+        assert.equal((await shape(db)).version, LATEST);
         await db.close();
     });
 
@@ -81,7 +85,7 @@ describe('schema migrations (task 4)', () => {
         const db = await makeDb();
         migrate(db.raw);
         assert.deepEqual(migrate(db.raw), []);
-        assert.equal((await shape(db)).version, 3);
+        assert.equal((await shape(db)).version, LATEST);
         await db.close();
     });
 
@@ -91,7 +95,7 @@ describe('schema migrations (task 4)', () => {
         await db.close();
         const opened = open(file);
         assert.equal(opened.prepare('PRAGMA journal_mode;').get().journal_mode, 'wal');
-        assert.equal(opened.prepare('PRAGMA user_version;').get().user_version, 3);
+        assert.equal(opened.prepare('PRAGMA user_version;').get().user_version, LATEST);
         opened.close();
         fs.rmSync(db.dir, {recursive: true, force: true});
     });

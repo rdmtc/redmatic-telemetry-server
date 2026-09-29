@@ -85,6 +85,40 @@ minutes (`Cache-Control: max-age=300`).
   product and the lite version when queried.
 - `byday`: new installations per day (per hour for 7 days and less), `[epoch ms, count]`.
 
+## `GET /data/trend?dimension=<dimension>&days=<days>`
+
+The history of the page: the server takes a snapshot of the aggregates once a day (the first run after 00:00 UTC,
+checked hourly). **Active** means first or last seen in the 180 days before the snapshot.
+
+- `dimension`: `active` (the default: the active installations), `new` (new installations per day, exact), or the
+  active installations per `redmatic` version, `ccu` version (major.minor), `family`, `lite` version, `platform` or
+  `country` (code). Values with fewer than 5 installations on a day are summed into `(other)`.
+- `days`: `30`, `90`, `180`, `365` (the default), `730`, `1825` or `36500` (all). Anything else answers `400`.
+
+```json
+{
+  "dimension": "redmatic",
+  "days": 365,
+  "dates": ["2026-09-29", "2026-09-30"],
+  "estimated": [0, 0],
+  "series": [
+    ["9.10.0", [812, 815]],
+    ["(other)", [40, 41]]
+  ],
+  "snapshotsSince": "2026-09-29"
+}
+```
+
+- `dates`: the days with a snapshot (UTC), oldest first; a day the server did not run is missing.
+- `series`: `[value, [count per date]]`, sorted by the latest count, `(other)` last; a value missing on a day
+  counts 0.
+- `estimated`: `1` for a day before the first snapshot. Only `active` has such days: a rough curve backfilled once
+  from the first and last contact of each installation (an installation counts from its first contact until 180 days
+  after its last). It overcounts installations that were silent in between.
+- `snapshotsSince`: the day of the first real snapshot, `null` before it.
+
+Cached like `/data`.
+
 ## `GET /export.json`, `GET /export.csv`
 
 The anonymised export: the `/data` aggregates for every timespan, with no ids and no per-installation rows. JSON:

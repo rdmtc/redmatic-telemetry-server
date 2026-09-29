@@ -17,3 +17,7 @@
 - The image: multi-stage on `node:24-slim`, a `HEALTHCHECK` on `/healthz`, configuration by environment
   (`DB_PATH`, `IP2LOCATION_CSV`, `TRUST_PROXY`, `RATE_LIMIT`; `DB` still works).
 - Tests, lint and CI.
+- Daily aggregate snapshots (`daily_stats`, counts only): active installations (seen in 180 days) per RedMatic
+  version, CCU version, family, openccu-lite version, platform and country, and new installations per day;
+  `/data/trend`, and the page's "Active installations over time" chart. The first start backfills a rough active
+  curve from the first and last contacts.

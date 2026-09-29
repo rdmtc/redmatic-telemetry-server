@@ -21,6 +21,11 @@ Per installation (`installation`):
 
 Per installed module (`node`): its name and version, for the installation. Every contact replaces them.
 
+Per day (`daily_stats`, since task 11): counts only, no ids: how many installations were active (first or last seen
+in the 180 days before), how many were new, and the active ones per RedMatic version, CCU version, firmware family,
+openccu-lite version, platform and country. A value with fewer than 5 installations is counted as `(other)`, so no
+single installation shows. These counts are kept when installation rows are deleted.
+
 Not stored: the address, `deviceTypes`, the Node.js and Node-RED versions.
 
 The server's log has no ids and no addresses: one line per insert or update with the country code, and errors.
@@ -29,6 +34,7 @@ The server's log has no ids and no addresses: one line per insert or update with
 
 - **The page and `/data`:** aggregates only: counts per version, product, platform, country, openccu-lite version and
   public module (`redmatic-*`, `node-red-*`), and new installations per day.
+- **The history** (`/data/trend`): the daily counts above.
 - **The export** (`/export.json`, `/export.csv`): the same aggregates, for every timespan. No ids, no
   per-installation rows.
 - **Nobody** gets the database over HTTP. The raw download at `/database` was removed; copies of the database are

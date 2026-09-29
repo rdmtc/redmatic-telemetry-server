@@ -23,6 +23,11 @@ The server is configured by the environment only:
 | `TRUST_PROXY`     | `loopback, linklocal, uniquelocal`    | which peers may set `X-Forwarded-For`: Express' `trust proxy`, a hop count or a list                          |
 | `RATE_LIMIT`      | `10`                                  | telemetry POSTs per client address and hour, `0` turns it off                                                 |
 
+Once a day (checked at start and every hour) the server writes the day's aggregate snapshot into `daily_stats`
+([docs/api.md](docs/api.md#get-datatrenddimensiondimensiondaysdays)). The first run after the upgrade also
+backfills an estimated active curve from the existing rows; it takes about a tenth of a second on a synthetic database of 40 000
+installations.
+
 The database's directory must be writable by the server (SQLite's WAL files live next to it). In the image the
 country CSV is `/geo/IP2LOCATION-LITE-DB1.CSV`: baked in when the build context has the file, or mounted.
 `compose.example.yaml` shows the volumes, `build-push.sh` builds and pushes the image as `latest` and the package

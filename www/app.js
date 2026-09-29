@@ -390,6 +390,214 @@ function columnChart(container, byday, timespan) {
     );
 }
 
+// ---- trends (task 11) ----------------------------------------------------------------------------------------------
+
+const TREND_SERIES = 7;
+const TREND_OTHER = '(other)';
+const DAY_MS = 86400000;
+
+/** Sums the series by key(value), keeps the TREND_SERIES largest (by the latest date) and one "other". */
+function trendSeries(trend, key) {
+    const n = trend.dates.length;
+    const grouped = new Map();
+    for (const [value, counts] of trend.series) {
+        const k = value === TREND_OTHER ? TREND_OTHER : key(value);
+        const sum = grouped.get(k) || new Array(n).fill(0);
+        counts.forEach((c, i) => (sum[i] += c));
+        grouped.set(k, sum);
+    }
+    const last = n - 1;
+    const sorted = [...grouped].filter(([k]) => k !== TREND_OTHER).sort((a, b) => b[1][last] - a[1][last]);
+    const top = sorted.slice(0, TREND_SERIES).map(([label, counts]) => ({label, counts}));
+    const rest = sorted.slice(TREND_SERIES);
+    if (grouped.has(TREND_OTHER)) {
+        rest.push([TREND_OTHER, grouped.get(TREND_OTHER)]);
+    }
+    if (rest.length) {
+        const counts = new Array(n).fill(0);
+        rest.forEach(([, c]) => c.forEach((v, i) => (counts[i] += v)));
+        top.push({label: 'other', counts, other: true});
+    }
+    return top;
+}
+
+function dayLabel(date, long) {
+    return new Date(date + 'T00:00:00Z').toLocaleDateString('en', {
+        year: 'numeric',
+        month: 'short',
+        day: long ? 'numeric' : undefined,
+        timeZone: 'UTC',
+    });
+}
+
+/**
+ * A stacked area chart over the dates, one band per series (the first at the bottom). Estimated dates (the backfill
+ * before the first snapshot) are drawn lighter.
+ */
+function areaChart(container, {dates, estimated = [], series, title, labelOf = shown}) {
+    container.replaceChildren();
+    const width = Math.max(260, container.clientWidth);
+    const height = 220;
+    const left = 52;
+    const right = 8;
+    const bottom = 24;
+    const top = 8;
+    const plotWidth = width - left - right;
+    const plotHeight = height - bottom - top;
+    const times = dates.map((d) => Date.parse(d + 'T00:00:00Z'));
+    const t0 = times[0];
+    const span = Math.max(DAY_MS, times[times.length - 1] - t0);
+    const xOf = (i) => left + ((times[i] - t0) / span) * plotWidth;
+    const totals = dates.map((_, i) => series.reduce((sum, s) => sum + s.counts[i], 0));
+    const max = Math.max(1, ...totals);
+    const step = Math.max(1, niceStep(max));
+    const yMax = Math.ceil(max / step) * step;
+    const yOf = (v) => top + plotHeight - (v / yMax) * plotHeight;
+    const last = dates.length - 1;
+
+    const svg = svgEl('svg', {
+        width,
+        height,
+        viewBox: `0 0 ${width} ${height}`,
+        role: 'img',
+        'aria-label': `${title}, ${dayLabel(dates[0], true)} to ${dayLabel(dates[last], true)}: ${series
+            .map((s) => `${s.other ? s.label : labelOf(s.label)} ${fmt(s.counts[last])}`)
+            .join(', ')}`,
+    });
+    for (let v = 0; v <= yMax; v += step) {
+        const y = yOf(v);
+        svg.append(svgEl('line', {class: v ? 'gridline' : 'axis', x1: left, x2: width - right, y1: y, y2: y}));
+        svg.append(svgEl('text', {x: left - 6, y: y + 4, 'text-anchor': 'end'}, fmt(v)));
+    }
+    const base = dates.map(() => 0);
+    series.forEach((s, n) => {
+        const lower = [...base];
+        s.counts.forEach((c, i) => (base[i] += c));
+        const upperPoints = dates.map((_, i) => `${xOf(i).toFixed(1)},${yOf(base[i]).toFixed(1)}`);
+        const lowerPoints = dates.map((_, i) => `${xOf(i).toFixed(1)},${yOf(lower[i]).toFixed(1)}`).reverse();
+        svg.append(
+            svgEl('path', {
+                class: 'area ' + (s.other ? 'other' : 's' + (n % TREND_SERIES)),
+                d: 'M' + upperPoints.join('L') + 'L' + lowerPoints.join('L') + 'Z',
+            }),
+        );
+    });
+    // the estimated part: a veil over it and a line where the snapshots begin
+    const firstReal = estimated.findIndex((e) => !e);
+    if (estimated[0]) {
+        const x = firstReal === -1 ? width - right : xOf(firstReal);
+        svg.append(svgEl('rect', {class: 'veil', x: left, y: top, width: x - left, height: plotHeight}));
+        if (firstReal !== -1) {
+            svg.append(svgEl('line', {class: 'marker', x1: x, x2: x, y1: top, y2: top + plotHeight}));
+        }
+    }
+    // hover: one strip per date
+    const strip = plotWidth / Math.max(1, dates.length);
+    dates.forEach((date, i) => {
+        const lines = series
+            .map((s) => `${s.other ? s.label : labelOf(s.label)}: ${fmt(s.counts[i])}`)
+            .reverse()
+            .join(' · ');
+        const tip =
+            `${dayLabel(date, true)}${estimated[i] ? ' (estimated)' : ''}: ${fmt(totals[i])} active` +
+            (series.length > 1 ? ' - ' + lines : '');
+        svg.append(
+            svgEl('rect', {
+                class: 'hit',
+                'data-tip': tip,
+                x: Math.max(left, xOf(i) - strip / 2),
+                y: top,
+                width: Math.max(1, strip),
+                height: plotHeight,
+            }),
+        );
+    });
+    const labels = [...new Set([0, ...(width >= 480 ? [Math.floor(last / 2)] : []), last])];
+    labels.forEach((i, n) => {
+        const anchor = n === 0 ? 'start' : n === labels.length - 1 ? 'end' : 'middle';
+        svg.append(svgEl('text', {x: xOf(i), y: height - 6, 'text-anchor': anchor}, dayLabel(dates[i], false)));
+    });
+    container.append(svg);
+    if (series.length > 1) {
+        const legend = el('ul', {class: 'legend'});
+        [...series].reverse().forEach((s) => {
+            const n = series.indexOf(s);
+            legend.append(
+                el(
+                    'li',
+                    {},
+                    el('span', {class: 'swatch ' + (s.other ? 'other' : 's' + (n % TREND_SERIES))}),
+                    s.other ? s.label : labelOf(s.label),
+                ),
+            );
+        });
+        container.append(legend);
+    }
+    const rows = series.map((s) => [s.other ? s.label : labelOf(s.label), s.counts[last]]);
+    container.append(
+        table(rows, {total: totals[last], labelOf: String, summary: `${dayLabel(dates[last], true)} as a table`}),
+    );
+}
+
+let trendLoad = 0;
+// the fetched histories by URL: a resize redraws without asking the server again
+const trendCache = new Map();
+
+async function loadTrend(timespan, countryName) {
+    const dimension = document.getElementById('trend-dimension').value;
+    const container = document.getElementById('chart-trend');
+    const note = document.getElementById('trend-note');
+    const days = Math.max(30, timespan);
+    const ticket = ++trendLoad;
+    const url = `data/trend?dimension=${encodeURIComponent(dimension)}&days=${days}`;
+    let trend = trendCache.get(url);
+    try {
+        if (!trend) {
+            const res = await fetch(url);
+            if (!res.ok) {
+                throw new Error(res.status + ' ' + res.statusText);
+            }
+            trend = await res.json();
+            trendCache.set(url, trend);
+        }
+    } catch (err) {
+        if (ticket === trendLoad) {
+            container.replaceChildren(el('p', {class: 'empty'}, 'The history could not be loaded: ' + err.message));
+        }
+        return;
+    }
+    if (ticket !== trendLoad) {
+        return;
+    }
+    note.textContent = trend.snapshotsSince
+        ? `Active: seen in the 180 days before. Daily snapshots since ${dayLabel(trend.snapshotsSince, true)}` +
+          (dimension === 'active' ? '; before that, estimated from the first and last contact.' : '.')
+        : 'Active: seen in the 180 days before. The daily snapshots have not started yet.';
+    if (trend.dates.length < 2) {
+        container.replaceChildren(el('p', {class: 'empty'}, 'Not enough daily snapshots in this timespan yet.'));
+        return;
+    }
+    const labels =
+        {
+            redmatic: {key: majorMinor},
+            family: {labelOf: (f) => FAMILIES[f] || shown(f)},
+            country: {
+                labelOf: (cc) => {
+                    const name = countryName.get(cc);
+                    return !cc || cc === '-' || cc === '--' ? 'unknown' : flag(cc) + (name && name !== '-' ? name : cc);
+                },
+            },
+        }[dimension] || {};
+    const key = labels.key || ((v) => v);
+    areaChart(container, {
+        dates: trend.dates,
+        estimated: trend.estimated,
+        series: trendSeries(trend, key),
+        title: 'Active installations',
+        labelOf: labels.labelOf || shown,
+    });
+}
+
 // ---- the page ------------------------------------------------------------------------------------------------------
 
 function renderNodes(data) {
@@ -456,6 +664,8 @@ function render(data, timespan) {
         },
     });
     renderNodes(data);
+    current.countryName = countryName;
+    loadTrend(timespan, countryName);
 }
 
 function selected() {
@@ -475,6 +685,7 @@ async function load() {
         if (!res.ok) {
             throw new Error(res.status + ' ' + res.statusText);
         }
+        trendCache.clear();
         current = {data: await res.json(), timespan};
         status.textContent = '';
         render(current.data, current.timespan);
@@ -492,6 +703,9 @@ function init() {
     }
     window.addEventListener('hashchange', load);
     document.getElementById('nodes-filter').addEventListener('input', () => current && renderNodes(current.data));
+    document
+        .getElementById('trend-dimension')
+        .addEventListener('change', () => current && loadTrend(current.timespan, current.countryName || new Map()));
     let width = document.querySelector('main').clientWidth;
     let timer;
     new ResizeObserver(() => {

@@ -56,6 +56,26 @@
                 <div class="chart" id="chart-new"></div>
             </section>
 
+            <section class="card wide" aria-labelledby="h-trend">
+                <div class="card-head">
+                    <h2 id="h-trend">Active installations over time</h2>
+                    <label class="filter">
+                        <span>Split by</span>
+                        <select id="trend-dimension">
+                            <option value="active">nothing</option>
+                            <option value="redmatic" selected>RedMatic version</option>
+                            <option value="ccu">CCU version</option>
+                            <option value="family">Firmware family</option>
+                            <option value="lite">openccu-lite version</option>
+                            <option value="platform">CCU platform</option>
+                            <option value="country">Country</option>
+                        </select>
+                    </label>
+                </div>
+                <div class="chart" id="chart-trend"></div>
+                <p class="note" id="trend-note"></p>
+            </section>
+
             <div class="grid">
                 <section class="card" aria-labelledby="h-redmatic">
                     <h2 id="h-redmatic">RedMatic versions</h2>
