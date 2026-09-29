@@ -1,13 +1,13 @@
-FROM node:10
+FROM node:24-slim
 
 WORKDIR /usr/src/app
 
 COPY package*.json ./
-COPY . .
+RUN npm ci --omit=dev
 
-RUN npm install --production
+COPY . .
 
 RUN groupmod -g 996 node && usermod -u 996 -g 996 node
 USER node
 
-CMD [ "npm", "start" ]
+CMD [ "node", "server.js" ]

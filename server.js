@@ -3,9 +3,8 @@
 const path = require('path');
 const http = require('http');
 
-const sqlite3 = require('sqlite3');
+const {DatabaseSync} = require('node:sqlite');
 const express = require('express');
-const bodyParser = require('body-parser');
 const semverCompare = require('semantic-compare');
 const Ip2cc = require('ip2countrycode');
 
@@ -31,7 +30,7 @@ const notNodes = ['ccu', 'redmatic', 'node-red', 'nodejs', 'ain2', 'npm'];
 /**
  * Creates the Express app.
  * @param {object} options
- * @param {object} options.db the telemetry database (sqlite3.Database)
+ * @param {DatabaseSync} options.db the telemetry database
  * @param {{lookup: function(string): {code: string, country: string}}} options.ip2cc the country lookup
  * @param {function(...*)} [options.log] logger
  * @param {boolean|number|string} [options.trustProxy] Express' "trust proxy": which peers may set X-Forwarded-For
@@ -47,8 +46,7 @@ function createApp({
 }) {
     const app = express();
     const allowed = rateLimit ? rateLimiter(rateLimit) : () => true;
-    const q = promisify(db);
-    const exclusive = mutex();
+    const q = database(db);
     let exportCache = null;
 
     // Only the reverse proxy's X-Forwarded-For counts: req.ip is the client address it saw (B-4).
@@ -56,58 +54,49 @@ function createApp({
 
     app.use(express.static(path.join(__dirname, 'www')));
 
-    app.get(
-        '/total.svg',
-        route(async (req, res) => {
-            const row = await q.get('SELECT COUNT(redmatic) AS total FROM installation;');
-            res.set('Cache-Control', 'max-age=3600');
-            res.set('Content-Type', 'image/svg+xml;charset=utf-8');
-            res.status(200).send(badge(formatInstalls(row.total)));
-        }),
-    );
+    app.get('/total.svg', (req, res) => {
+        const row = q.get('SELECT COUNT(redmatic) AS total FROM installation;');
+        res.set('Cache-Control', 'max-age=3600');
+        res.set('Content-Type', 'image/svg+xml;charset=utf-8');
+        res.status(200).send(badge(formatInstalls(row.total)));
+    });
 
-    app.get(
-        '/data',
-        route(async (req, res) => {
-            log('get /data');
-            const timespan = parseInt(req.query.timespan, 10) || 36500;
-            res.json(await aggregate(q, timespan));
-        }),
-    );
+    app.get('/data', (req, res) => {
+        log('get /data');
+        const timespan = parseInt(req.query.timespan, 10) || 36500;
+        res.json(aggregate(q, timespan));
+    });
 
     // The raw database is not served (B-1): it holds every installation's telemetry id. What can be downloaded is
     // this anonymised export, the same aggregates the page shows, for every timespan the page offers.
-    app.get(
-        ['/export.json', '/export.csv'],
-        route(async (req, res) => {
-            log('get', req.path);
-            if (!exportCache || Date.now() - exportCache.time >= exportMaxAge * 1000) {
-                const timespans = {};
-                for (const timespan of exportTimespans) {
-                    timespans[timespan === 36500 ? 'all' : String(timespan)] = await aggregate(q, timespan);
-                }
-                exportCache = {
-                    time: Date.now(),
-                    data: {
-                        generated: new Date().toISOString(),
-                        description:
-                            'Anonymised aggregates of the RedMatic telemetry: counts of installations first or last ' +
-                            'seen in the timespan, per value. No telemetry ids, no per-installation rows.',
-                        timespans,
-                    },
-                };
+    app.get(['/export.json', '/export.csv'], (req, res) => {
+        log('get', req.path);
+        if (!exportCache || Date.now() - exportCache.time >= exportMaxAge * 1000) {
+            const timespans = {};
+            for (const timespan of exportTimespans) {
+                timespans[timespan === 36500 ? 'all' : String(timespan)] = aggregate(q, timespan);
             }
-            res.set('Cache-Control', 'max-age=' + exportMaxAge);
-            if (req.path === '/export.csv') {
-                res.set('Content-Type', 'text/csv;charset=utf-8');
-                res.set('Content-Disposition', 'attachment; filename="redmatic-telemetry-export.csv"');
-                res.send(exportCsv(exportCache.data));
-            } else {
-                res.set('Content-Disposition', 'attachment; filename="redmatic-telemetry-export.json"');
-                res.json(exportCache.data);
-            }
-        }),
-    );
+            exportCache = {
+                time: Date.now(),
+                data: {
+                    generated: new Date().toISOString(),
+                    description:
+                        'Anonymised aggregates of the RedMatic telemetry: counts of installations first or last ' +
+                        'seen in the timespan, per value. No telemetry ids, no per-installation rows.',
+                    timespans,
+                },
+            };
+        }
+        res.set('Cache-Control', 'max-age=' + exportMaxAge);
+        if (req.path === '/export.csv') {
+            res.set('Content-Type', 'text/csv;charset=utf-8');
+            res.set('Content-Disposition', 'attachment; filename="redmatic-telemetry-export.csv"');
+            res.send(exportCsv(exportCache.data));
+        } else {
+            res.set('Content-Disposition', 'attachment; filename="redmatic-telemetry-export.json"');
+            res.json(exportCache.data);
+        }
+    });
 
     app.post(
         '/',
@@ -118,8 +107,8 @@ function createApp({
             log('rate limited');
             res.status(429).send('');
         },
-        bodyParser.json({limit: '64kb'}),
-        route(async (req, res) => {
+        express.json({limit: '64kb'}),
+        (req, res) => {
             const userAgent = String(req.get('user-agent') || '');
             const uuid = String(req.get('x-redmatic-uuid') || '');
             const body = userAgent.startsWith('curl/') && uuidPattern.test(uuid) ? validate(req.body) : null;
@@ -127,9 +116,9 @@ function createApp({
                 log('invalid request');
                 return res.status(400).send('');
             }
-            await store(uuid.toLowerCase(), body, clientAddress(req));
+            store(uuid.toLowerCase(), body, clientAddress(req));
             res.send('');
-        }),
+        },
     );
 
     // Errors: a malformed body is the client's (400), everything else is ours (500). The process stays up.
@@ -145,40 +134,34 @@ function createApp({
         return String(req.ip || '').replace(/^::ffff:/, '');
     }
 
-    async function store(uuid, {fields, nodes}, ip) {
+    function store(uuid, {fields, nodes}, ip) {
         const country = ip2cc.lookup(ip);
         const installation = {
             cc: (country && country.code) || null,
             country: (country && country.country) || null,
             ...fields,
         };
-        await exclusive(() =>
-            transaction(q, async () => {
-                const known = await q.get('SELECT redmatic FROM installation WHERE uuid=?;', [uuid]);
-                const i = installation;
-                if (known) {
-                    log('update', i.cc);
-                    await q.run(
-                        'UPDATE installation SET redmatic=?, ccu=?, platform=?, product=?, lite=?, cc=?, country=?, updated=CURRENT_TIMESTAMP, counter=counter+1 WHERE uuid=?;',
-                        [i.redmatic, i.ccu, i.platform, i.product, i.lite, i.cc, i.country, uuid],
-                    );
-                } else {
-                    log('insert', i.cc);
-                    await q.run(
-                        'INSERT INTO installation (uuid, redmatic, initial, ccu, platform, product, lite, created, counter, cc, country) VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP,0,?,?);',
-                        [uuid, i.redmatic, i.redmatic, i.ccu, i.platform, i.product, i.lite, i.cc, i.country],
-                    );
-                }
-                await q.run('DELETE FROM node WHERE installation_uuid=?', [uuid]);
-                for (const [name, version] of Object.entries(nodes)) {
-                    await q.run('INSERT INTO node (name, version, installation_uuid) VALUES (?,?,?);', [
-                        name,
-                        version,
-                        uuid,
-                    ]);
-                }
-            }),
-        );
+        q.transaction(() => {
+            const known = q.get('SELECT redmatic FROM installation WHERE uuid=?;', [uuid]);
+            const i = installation;
+            if (known) {
+                log('update', i.cc);
+                q.run(
+                    'UPDATE installation SET redmatic=?, ccu=?, platform=?, product=?, lite=?, cc=?, country=?, updated=CURRENT_TIMESTAMP, counter=counter+1 WHERE uuid=?;',
+                    [i.redmatic, i.ccu, i.platform, i.product, i.lite, i.cc, i.country, uuid],
+                );
+            } else {
+                log('insert', i.cc);
+                q.run(
+                    'INSERT INTO installation (uuid, redmatic, initial, ccu, platform, product, lite, created, counter, cc, country) VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP,0,?,?);',
+                    [uuid, i.redmatic, i.redmatic, i.ccu, i.platform, i.product, i.lite, i.cc, i.country],
+                );
+            }
+            q.run('DELETE FROM node WHERE installation_uuid=?', [uuid]);
+            for (const [name, version] of Object.entries(nodes)) {
+                q.run('INSERT INTO node (name, version, installation_uuid) VALUES (?,?,?);', [name, version, uuid]);
+            }
+        });
     }
 
     return app;
@@ -253,40 +236,47 @@ function rateLimiter({limit, windowMs, now = Date.now}) {
     };
 }
 
-/** An Express handler from an async function: a rejection goes to the error handler (Express 4 does not). */
-function route(fn) {
-    return (req, res, next) => fn(req, res).catch(next);
-}
-
-/** Runs the calls one after another, so two transactions on the one connection never interleave. */
-function mutex() {
-    let last = Promise.resolve();
-    return (fn) => {
-        const result = last.then(fn);
-        last = result.catch(() => {});
-        return result;
+/**
+ * A thin layer over node:sqlite: cached statements, plain row objects, undefined bound as NULL, and transactions
+ * that roll back on an error. Synchronous: a transaction never interleaves with another request.
+ */
+function database(db) {
+    const statements = new Map();
+    const statement = (sql) => {
+        let stmt = statements.get(sql);
+        if (!stmt) {
+            stmt = db.prepare(sql);
+            statements.set(sql, stmt);
+        }
+        return stmt;
     };
-}
-
-async function transaction(q, fn) {
-    await q.run('BEGIN TRANSACTION;');
-    try {
-        await fn();
-        await q.run('COMMIT;');
-    } catch (err) {
-        await q.run('ROLLBACK;').catch(() => {});
-        throw err;
-    }
-}
-
-function promisify(db) {
+    const bind = (params) => params.map((v) => (v === undefined ? null : v));
     return {
-        get: (sql, params = []) =>
-            new Promise((resolve, reject) => db.get(sql, params, (err, row) => (err ? reject(err) : resolve(row)))),
+        get: (sql, params = []) => {
+            const row = statement(sql).get(...bind(params));
+            return row && {...row};
+        },
         all: (sql, params = []) =>
-            new Promise((resolve, reject) => db.all(sql, params, (err, rows) => (err ? reject(err) : resolve(rows)))),
-        run: (sql, params = []) =>
-            new Promise((resolve, reject) => db.run(sql, params, (err) => (err ? reject(err) : resolve()))),
+            statement(sql)
+                .all(...bind(params))
+                .map((row) => ({...row})),
+        run: (sql, params = []) => statement(sql).run(...bind(params)),
+        exec: (sql) => db.exec(sql),
+        transaction(fn) {
+            db.exec('BEGIN;');
+            try {
+                const result = fn();
+                db.exec('COMMIT;');
+                return result;
+            } catch (err) {
+                try {
+                    db.exec('ROLLBACK;');
+                } catch {
+                    // the error that rolled it back is the one to report
+                }
+                throw err;
+            }
+        },
     };
 }
 
@@ -309,21 +299,22 @@ const familyExpression =
 /**
  * Brings a database up to what the code needs. Until task 4's migrations: the lite column (task 2).
  */
-async function prepare(db) {
-    const q = promisify(db);
-    const columns = await q.all('PRAGMA table_info(installation);');
+function prepare(db) {
+    const q = database(db);
+    const columns = q.all('PRAGMA table_info(installation);');
     if (!columns.some((c) => c.name === 'lite')) {
-        await q.run('ALTER TABLE installation ADD COLUMN lite VARCHAR (32);');
+        q.run('ALTER TABLE installation ADD COLUMN lite VARCHAR (32);');
     }
 }
 
 /**
  * The aggregates of the page (and the export) for one timespan.
  */
-async function aggregate(q, timespan) {
+function aggregate(q, timespan) {
     const data = {};
-    const since = '(SELECT DATETIME("now", "-' + timespan + ' day"))';
-    const where = 'WHERE (created > ' + since + ' OR (updated > ' + since + '))';
+    const since = ['-' + timespan + ' day'];
+    const where = "WHERE (created > DATETIME('now', ?) OR updated > DATETIME('now', ?))";
+    const both = [...since, ...since];
     const group = (column) =>
         q.all(
             'SELECT ' +
@@ -333,76 +324,76 @@ async function aggregate(q, timespan) {
                 ' GROUP BY ' +
                 column +
                 ' ORDER BY count DESC;',
+            both,
         );
 
-    Object.assign(data, await q.get('SELECT COUNT(redmatic) AS total FROM installation ' + where + ';'));
-    data.products = (await group('product')).map((o) => [o.product, o.count]);
-    data.countries = (
-        await q.all(
+    Object.assign(data, q.get('SELECT COUNT(redmatic) AS total FROM installation ' + where + ';', both));
+    data.products = group('product').map((o) => [o.product, o.count]);
+    data.countries = q
+        .all(
             'SELECT cc, country, COUNT(uuid) AS count FROM installation ' + where + ' GROUP BY cc ORDER BY count DESC;',
+            both,
         )
-    ).map((o) => [o.cc, o.country, o.count]);
-    data.platforms = (await group('platform')).map((o) => [o.platform, o.count]);
+        .map((o) => [o.cc, o.country, o.count]);
+    data.platforms = group('platform').map((o) => [o.platform, o.count]);
     // [version, installations, of them openccu-lite]: a lite system reports its OpenCCU base version here
-    data.ccuVersions = (
-        await q.all(
+    data.ccuVersions = q
+        .all(
             'SELECT ccu, COUNT(uuid) AS count, SUM(' +
                 liteCondition +
                 ') AS lite FROM installation ' +
                 where +
                 ' GROUP BY ccu ORDER BY count DESC;',
+            both,
         )
-    )
         .map((o) => [o.ccu, o.count, o.lite])
         .sort((a, b) => semverCompare(b[0], a[0]));
-    data.nodes = (
-        await q.all(
+    data.nodes = q
+        .all(
             'SELECT node.name AS name, COUNT(node.installation_uuid) AS count FROM node LEFT JOIN installation ON installation.uuid = node.installation_uuid ' +
                 where +
                 ' GROUP BY name ORDER BY count DESC;',
+            both,
         )
-    )
         .filter((o) => o.name.startsWith('redmatic-') || o.name.startsWith('node-red-'))
         .map((o) => [o.name, o.count]);
-    data.versions = (await group('redmatic'))
+    data.versions = group('redmatic')
         .map((o) => [o.redmatic, o.count])
         .sort((a, b) => semverCompare(b[0], a[0]));
-    data.liteVersions = (
-        await q.all(
+    data.liteVersions = q
+        .all(
             'SELECT lite, COUNT(uuid) AS count FROM installation ' +
                 where +
                 ' AND lite IS NOT NULL GROUP BY lite ORDER BY count DESC;',
+            both,
         )
-    )
         .map((o) => [o.lite, o.count])
         .sort((a, b) => semverCompare(b[0], a[0]));
-    data.families = (
-        await q.all(
+    data.families = q
+        .all(
             'SELECT ' +
                 familyExpression +
                 ' AS family, COUNT(uuid) AS count FROM installation ' +
                 where +
                 ' GROUP BY family ORDER BY count DESC;',
+            both,
         )
-    ).map((o) => [o.family, o.count]);
-    data.litePlatforms = (
-        await q.all(
+        .map((o) => [o.family, o.count]);
+    data.litePlatforms = q
+        .all(
             'SELECT platform, COUNT(uuid) AS count FROM installation ' +
                 where +
                 ' AND ' +
                 liteCondition +
                 ' GROUP BY platform ORDER BY count DESC;',
+            both,
         )
-    ).map((o) => [o.platform, o.count]);
+        .map((o) => [o.platform, o.count]);
     const format = timespan > 7 ? '%Y-%m-%d' : '%Y-%m-%d %H:00:00';
-    const rows = await q.all(
-        'SELECT strftime("' +
-            format +
-            '", created) AS date, strftime("%s", strftime("' +
-            format +
-            '", created)) AS ts, COUNT(created) AS count FROM installation WHERE created > ' +
-            since +
-            ' GROUP BY date ORDER BY date;',
+    const rows = q.all(
+        "SELECT strftime(?, created) AS date, strftime('%s', strftime(?, created)) AS ts, COUNT(created) AS count " +
+            "FROM installation WHERE created > DATETIME('now', ?) GROUP BY date ORDER BY date;",
+        [format, format, ...since],
     );
     data.byday = rows.map((o) => [parseInt(o.ts, 10) * 1000, o.count]);
     return data;
@@ -497,13 +488,12 @@ function ts() {
     );
 }
 
-async function main() {
+function main() {
     const port = parseInt(process.env.PORT, 10) || 8080;
     const dbfile = process.env.DB || path.join(__dirname, 'redmatic.db');
-    const db = new sqlite3.Database(dbfile);
-    db.on('error', (err) => defaultLog(err.message));
+    const db = new DatabaseSync(dbfile);
     const ip2cc = new Ip2cc(path.join(__dirname, 'IP2LOCATION-LITE-DB1.CSV'));
-    await prepare(db);
+    prepare(db);
 
     const trustProxy = process.env.TRUST_PROXY;
     // telemetry POSTs per client address and hour; 0 turns the limit off
@@ -521,10 +511,8 @@ async function main() {
     const exit = (signal) => {
         process.on(signal, () => {
             defaultLog('received', signal);
-            db.close((err) => {
-                defaultLog('db.close', err || '');
-                process.exit(0);
-            });
+            db.close();
+            process.exit(0);
         });
     };
     exit('SIGTERM');
@@ -532,10 +520,7 @@ async function main() {
 }
 
 if (require.main === module) {
-    main().catch((err) => {
-        defaultLog('start failed:', err.message);
-        process.exit(1);
-    });
+    main();
 }
 
 module.exports = {

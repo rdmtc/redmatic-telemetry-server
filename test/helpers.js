@@ -7,7 +7,7 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 
-const sqlite3 = require('sqlite3');
+const {DatabaseSync} = require('node:sqlite');
 const Ip2cc = require('ip2countrycode');
 
 const {createApp, prepare} = require('../server.js');
@@ -20,24 +20,35 @@ const liveColumns = [
     'ALTER TABLE installation ADD COLUMN country VARCHAR (255);',
 ];
 
-function promisify(db) {
+function wrap(db) {
+    const bind = (params) => params.map((v) => (v === undefined ? null : v));
     return {
         raw: db,
-        exec: (sql) => new Promise((resolve, reject) => db.exec(sql, (err) => (err ? reject(err) : resolve()))),
-        run: (sql, params = []) =>
-            new Promise((resolve, reject) => db.run(sql, params, (err) => (err ? reject(err) : resolve()))),
-        get: (sql, params = []) =>
-            new Promise((resolve, reject) => db.get(sql, params, (err, row) => (err ? reject(err) : resolve(row)))),
-        all: (sql, params = []) =>
-            new Promise((resolve, reject) => db.all(sql, params, (err, rows) => (err ? reject(err) : resolve(rows)))),
-        close: () => new Promise((resolve) => db.close(() => resolve())),
+        exec: async (sql) => db.exec(sql),
+        run: async (sql, params = []) => db.prepare(sql).run(...bind(params)),
+        get: async (sql, params = []) => {
+            const row = db.prepare(sql).get(...bind(params));
+            return row && {...row};
+        },
+        all: async (sql, params = []) =>
+            db
+                .prepare(sql)
+                .all(...bind(params))
+                .map((row) => ({...row})),
+        close: async () => {
+            try {
+                db.close();
+            } catch {
+                // already closed by the test
+            }
+        },
     };
 }
 
 async function makeDb() {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rts-test-'));
     const file = path.join(dir, 'test.db');
-    const db = promisify(new sqlite3.Database(file));
+    const db = wrap(new DatabaseSync(file));
     await db.exec(fs.readFileSync(path.join(root, 'redmatic-telemetry.sql')).toString());
     for (const sql of liveColumns) {
         await db.exec(sql);
@@ -94,7 +105,7 @@ async function insertInstallation(db, n, fields = {}) {
 
 async function startServer(options = {}) {
     const db = options.db || (await makeDb());
-    await prepare(db.raw);
+    prepare(db.raw);
     const logs = [];
     const ip2cc = new Ip2cc(path.join(__dirname, 'fixtures', 'ip2location.csv'));
     const app = createApp({

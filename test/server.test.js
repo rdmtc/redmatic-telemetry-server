@@ -372,7 +372,7 @@ describe('a closed database (B-4)', () => {
     let server;
     before(async () => {
         server = await startServer();
-        await new Promise((resolve) => server.db.raw.close(resolve));
+        server.db.raw.close();
     });
     after(() => server.close());
 
@@ -556,7 +556,7 @@ describe('openccu-lite (task 2)', () => {
 
     it('adds the lite column to a database that lacks it, once', async () => {
         const {prepare} = require('../server.js');
-        await prepare(server.db.raw);
+        prepare(server.db.raw);
         const columns = await server.db.all('PRAGMA table_info(installation);');
         assert.equal(columns.filter((c) => c.name === 'lite').length, 1);
     });
