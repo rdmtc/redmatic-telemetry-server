@@ -163,5 +163,5 @@ The page, `www/`.
 
 ## Removed
 
-- `GET /database` (the raw database file) answers `404` since B-1: it held every installation's id.
+- `GET /database` (the raw database file) answers `404` since 2.0.0: it held every installation's id.
 - `POST /log` and `/logs/…` (the log upload of RedMatic's `redmatic-logupload`) answer `404`.
