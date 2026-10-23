@@ -3,7 +3,7 @@
 ## 2.1.1 / 2026-10-23
 
 - The image is built on **Node.js 24.22.1** (`node:24.22.1-slim`, pinned), the release with the current security fixes.
-  `build-push.sh` pulls the base image on every build.
+- `build-push.sh` is removed: the image is published to ghcr.io by the GitHub workflow.
 
 ## 2.1.0 / 2026-09-29
 
