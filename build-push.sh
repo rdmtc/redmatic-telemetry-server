@@ -5,7 +5,7 @@ set -eu
 IMAGE=${IMAGE:-hobbyquaker/redmatic-telemetry-server}
 VERSION=$(node -p "require('./package.json').version")
 
-docker buildx build --push \
+docker buildx build --push --pull \
     --tag "$IMAGE:latest" \
     --tag "$IMAGE:$VERSION" \
     "$@" .
